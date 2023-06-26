@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use openraft::error::{ClientWriteError, ForwardToLeader, NetworkError, RPCError, RemoteError};
 use openraft::raft::ClientWriteResponse;
@@ -15,6 +16,8 @@ use crate::{ClusterNode, ClusterNodeId, TypeConfig};
 
 pub type WriteError =
     RPCError<ClusterNodeId, ClusterNode, ClientWriteError<ClusterNodeId, ClusterNode>>;
+
+pub const POOL_IDLE_TIMEOUT_SECONDS: u64 = 3;
 
 #[derive(Debug, Clone)]
 pub struct MetaHttpClient {
@@ -32,9 +35,10 @@ impl MetaHttpClient {
         }
         addrs.sort();
         let leader_addr = addrs[0].clone();
-
+        let client = reqwest::ClientBuilder::new()
+            .pool_idle_timeout(Duration::from_secs(POOL_IDLE_TIMEOUT_SECONDS));
         Self {
-            inner: Arc::new(reqwest::Client::new()),
+            inner: Arc::new(client.build().unwrap()),
             addrs,
             leader: Arc::new(Mutex::new(leader_addr)),
         }
@@ -105,7 +109,7 @@ impl MetaHttpClient {
     {
         let mut n_retry = 3;
 
-        let ttl = tokio::time::Duration::from_secs(60);
+        let ttl = Duration::from_secs(60);
         loop {
             let res: Result<Resp, RPCError<ClusterNodeId, ClusterNode, Err>> =
                 match tokio::time::timeout(ttl, self.do_send_rpc_to_leader(uri, req)).await {
@@ -205,7 +209,7 @@ mod test {
     };
     use models::schema::DatabaseSchema;
     use tokio::sync::mpsc::channel;
-    use tokio::time::timeout;
+    use tokio::time::{timeout, Duration};
 
     use crate::client::MetaHttpClient;
     use crate::store::command::{self, UpdateVnodeArgs, UpdateVnodeReplSetArgs};
@@ -356,7 +360,7 @@ mod test {
         let (send, mut recv) = channel(1024);
         send.send(123).await.unwrap();
         loop {
-            match timeout(tokio::time::Duration::from_secs(3), recv.recv()).await {
+            match timeout(Duration::from_secs(3), recv.recv()).await {
                 Ok(val) => println!("recv data: {:?}", val),
                 Err(tt) => println!("err timeout: {}", tt),
             }

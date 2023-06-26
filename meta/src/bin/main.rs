@@ -7,6 +7,7 @@ use actix_web::middleware::Logger;
 use actix_web::web::Data;
 use actix_web::{middleware, App, HttpServer};
 use clap::Parser;
+use meta::client::POOL_IDLE_TIMEOUT_SECONDS;
 use meta::service::connection::Connections;
 use meta::service::{api, raft_api};
 use meta::store::command::WriteCommand;
@@ -114,7 +115,7 @@ pub async fn start_service(opt: Opt) -> std::io::Result<()> {
             .service(api::backtrace)
             .service(api::cpu_pprof)
     })
-    .keep_alive(Duration::from_secs(5));
+    .keep_alive(Duration::from_secs(POOL_IDLE_TIMEOUT_SECONDS + 2));
 
     let x = server.bind(build_address(meta_ip, opt.port))?;
 
