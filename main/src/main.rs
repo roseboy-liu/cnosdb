@@ -113,7 +113,7 @@ impl FromStr for DeploymentMode {
             _ => {
                 return Err(
                     "deployment must be one of [query_tskv, tskv, query, singleton]".to_string(),
-                )
+                );
             }
         };
         Ok(mode)
@@ -189,9 +189,12 @@ fn main() -> Result<(), std::io::Error> {
         &GLOBAL_MAIN_LOG_GUARD,
     );
     init_tskv_metrics_recorder();
-
+    println!(
+        "Start with configuration \n {}----------",
+        config.to_string_pretty()
+    );
     let runtime = Arc::new(init_runtime(Some(config.deployment.cpu))?);
-    let mem_bytes = run_args.cpu.unwrap_or(config.deployment.memory) * 1024 * 1024 * 1024;
+    let mem_bytes = config.deployment.memory * 1024 * 1024 * 1024;
     let memory_pool = Arc::new(GreedyMemoryPool::new(mem_bytes));
     runtime.clone().block_on(async move {
         let builder = server::ServiceBuilder {
@@ -231,17 +234,12 @@ fn main() -> Result<(), std::io::Error> {
     Ok(())
 }
 
-fn parse_config(config_path: Option<impl AsRef<Path>>) -> config::Config {
-    let global_config = if let Some(p) = config_path {
-        println!("----------\nStart with configuration:");
+fn parse_config(config_path: Option<impl AsRef<Path>>) -> Config {
+    if let Some(p) = config_path {
         config::get_config(p).unwrap()
     } else {
-        println!("----------\nStart with default configuration:");
-        config::Config::default()
-    };
-    println!("{}----------", global_config.to_string_pretty());
-
-    global_config
+        Config::default()
+    }
 }
 
 fn init_runtime(cores: Option<usize>) -> Result<Runtime, std::io::Error> {
@@ -261,6 +259,7 @@ fn init_runtime(cores: Option<usize>) -> Result<Runtime, std::io::Error> {
         },
     }
 }
+
 /// Merge the deployment configs(mode) between CLI arguments and config file,
 /// values in the CLI arguments (if any) has higher priority.
 fn get_final_deployment_mode(
