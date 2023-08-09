@@ -2933,6 +2933,7 @@ dependencies = [
  "backtrace",
  "base64 0.13.1",
  "bincode",
+ "bumpalo",
  "byteorder",
  "bytes",
  "chrono",
@@ -4122,8 +4123,10 @@ name = "protocol_parser"
 version = "2.3.2"
 dependencies = [
  "async-backtrace",
+ "bumpalo",
  "bytes",
  "flatbuffers 22.12.6",
+ "minivec",
  "models",
  "protos",
  "serde",
@@ -4138,6 +4141,7 @@ dependencies = [
  "async-backtrace",
  "chrono",
  "flatbuffers 22.12.6",
+ "minivec",
  "prost",
  "prost-build",
  "protobuf 3.2.0",

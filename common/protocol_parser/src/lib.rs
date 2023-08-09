@@ -1,8 +1,10 @@
+#![feature(allocator_api)]
 extern crate core;
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
+use minivec::MiniVec;
 use protos::FieldValue;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
@@ -453,7 +455,7 @@ fn parse_boolean_field(buf: &str, boolean: bool) -> Result<FieldValue> {
                 return Err(Error::Parse {
                     pos: 0,
                     content: buf.to_string(),
-                })
+                });
             }
         }
     }
@@ -463,7 +465,11 @@ fn parse_boolean_field(buf: &str, boolean: bool) -> Result<FieldValue> {
 
 fn parse_string_field(buf: &str) -> Result<FieldValue> {
     match &buf[buf.len() - 1..] {
-        "\"" => return Ok(FieldValue::Str(buf[1..buf.len() - 1].as_bytes().to_vec())),
+        "\"" => {
+            return Ok(FieldValue::Str(MiniVec::from(
+                buf[1..buf.len() - 1].as_bytes(),
+            )))
+        }
         _ => Err(Error::Parse {
             pos: 0,
             content: buf.to_string(),

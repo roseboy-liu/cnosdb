@@ -10,6 +10,7 @@ use std::fmt::{Display, Formatter};
 
 use flatbuffers::{FlatBufferBuilder, ForwardsUOffset, WIPOffset};
 use generated::models::Point;
+use minivec::MiniVec;
 use snafu::Snafu;
 use utils::{bitset::BitSet, BkdrHasher};
 
@@ -54,7 +55,7 @@ pub enum PointsError {
 pub enum FieldValue {
     U64(u64),
     I64(i64),
-    Str(Vec<u8>),
+    Str(MiniVec<u8>),
     F64(f64),
     Bool(bool),
 }

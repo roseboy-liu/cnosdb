@@ -180,11 +180,15 @@ impl Vector for VectorService {
             lines.push_str(&line);
             lines.push('\n');
         }
-        let parser = Parser::new(Utc::now().timestamp_millis());
-        let lines = parser
-            .parse(lines.as_str())
-            .map_err(|e| Status::invalid_argument(e.to_string()))?;
-        let points = parse_lines_to_points(db.as_str(), &lines);
+
+        let points = {
+            let arena = bumpalo::Bump::new();
+            let parser = Parser::new(Utc::now().timestamp_millis(), &arena);
+            let lines = parser
+                .parse(lines.as_str())
+                .map_err(|e| Status::invalid_argument(e.to_string()))?;
+            parse_lines_to_points(db.as_str(), &lines)
+        };
         let req = WritePointsRequest {
             version: 1,
             meta: None,

@@ -1,20 +1,25 @@
+use bumpalo::Bump;
+
 use crate::{
     check_pos_valid, next_field_set, next_measurement, next_tag_set, next_value, Error, Line,
     Result,
 };
 
-pub struct Parser {
+pub struct Parser<'a> {
     default_time: i64,
-    // TODO Some statistics here
+    arena: &'a Bump,
 }
 
-impl Parser {
-    pub fn new(default_time: i64) -> Parser {
-        Self { default_time }
+impl<'a> Parser<'a> {
+    pub fn new(default_time: i64, arena: &'a Bump) -> Parser {
+        Self {
+            default_time,
+            arena,
+        }
     }
 
-    pub fn parse<'a>(&self, lines: &'a str) -> Result<Vec<Line<'a>>> {
-        let mut ret: Vec<Line> = Vec::new();
+    pub fn parse(&self, lines: &'a str) -> Result<Vec<Line<'a>, &'a Bump>> {
+        let mut ret = Vec::new_in(self.arena);
         let mut pos = 0_usize;
         while let Some((mut line, offset)) = self.next_line(lines, pos)? {
             line.sort_and_dedup();
@@ -24,7 +29,7 @@ impl Parser {
         Ok(ret)
     }
 
-    fn next_line<'a>(&self, buf: &'a str, position: usize) -> Result<Option<(Line<'a>, usize)>> {
+    fn next_line(&self, buf: &'a str, position: usize) -> Result<Option<(Line<'a>, usize)>> {
         if position > buf.len() {
             return Ok(None);
         }
@@ -93,6 +98,7 @@ mod test {
     use std::fs::File;
     use std::io::Read;
 
+    use minivec::MiniVec;
     use protos::FieldValue;
 
     use crate::line_protocol::parser::{Line, Parser};
@@ -134,8 +140,8 @@ mod test {
                 fieldset,
                 (
                     vec![
-                        ("fa", FieldValue::Str(b"112\\\"3".to_vec())),
-                        ("fb", FieldValue::F64(2.0))
+                        ("fa", FieldValue::Str(MiniVec::from(b"112\\\"3".as_slice()))),
+                        ("fb", FieldValue::F64(2.0)),
                     ],
                     17
                 )
@@ -200,7 +206,8 @@ mod test {
             lines
         );
 
-        let parser = Parser::new(-1);
+        let bump = bumpalo::Bump::new();
+        let parser = Parser::new(-1, &bump);
         let data = parser.parse(lines).unwrap();
         assert_eq!(data.len(), 2);
 
@@ -212,11 +219,14 @@ mod test {
                 table: "ma",
                 tags: vec![("ta", "2\\\\"), ("tb", "1")],
                 fields: vec![
-                    ("fa", FieldValue::Str(b"112\\\"3".to_vec())),
+                    ("fa", FieldValue::Str(MiniVec::from(b"112\\\"3".as_slice()))),
                     ("fb", FieldValue::F64(2.0)),
-                    ("fc", FieldValue::Str(b"hello, world".to_vec())),
+                    (
+                        "fc",
+                        FieldValue::Str(MiniVec::from(b"hello, world".as_slice()))
+                    ),
                 ],
-                timestamp: 1
+                timestamp: 1,
             }
         );
 
@@ -228,7 +238,7 @@ mod test {
                 table: "mb",
                 tags: vec![("tb", "2"), ("tc", "abc")],
                 fields: vec![("fa", FieldValue::F64(1.3)), ("fc", FieldValue::F64(0.9))],
-                timestamp: -1
+                timestamp: -1,
             }
         );
     }
@@ -240,7 +250,8 @@ mod test {
         let mut lp_lines = String::new();
         lp_file.read_to_string(&mut lp_lines).unwrap();
 
-        let parser = Parser::new(0);
+        let bump = bumpalo::Bump::new();
+        let parser = Parser::new(-1, &bump);
         let lines = parser.parse(&lp_lines).unwrap();
 
         for l in lines {
@@ -250,7 +261,8 @@ mod test {
 
     #[test]
     fn test_unicode() {
-        let parser = Parser::new(-1);
+        let bump = bumpalo::Bump::new();
+        let parser = Parser::new(-1, &bump);
         let lp = parser.parse("m,t1=中,t2=发,t3=majh f=\"白\"").unwrap();
         assert_eq!(lp.len(), 1);
         assert_eq!(lp[0].table, "m");
@@ -261,7 +273,21 @@ mod test {
         assert_eq!(lp[0].fields.len(), 1);
         assert_eq!(
             lp[0].fields[0],
-            ("f", FieldValue::Str("白".to_string().into_bytes().to_vec()))
+            ("f", FieldValue::Str(MiniVec::from("白".as_bytes())))
         );
+    }
+
+    #[test]
+    fn test_alloc() {
+        use bumpalo::Bump;
+
+        // Create a new bump arena.
+        let bump = Bump::new();
+
+        // Create a `Vec` whose elements are allocated within the bump arena.
+        let mut v = Vec::new_in(&bump);
+        v.push(0);
+        v.push(1);
+        v.push(2);
     }
 }

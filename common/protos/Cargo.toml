@@ -9,6 +9,7 @@ utils = { path = "../utils" }
 
 chrono = { workspace = true }
 flatbuffers = { workspace = true }
+minivec = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 snafu = { workspace = true }

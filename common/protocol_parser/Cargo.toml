@@ -9,11 +9,12 @@ edition.workspace = true
 models = { path = "../models" }
 protos = { path = "../protos" }
 utils = { path = "../utils" }
-
+bumpalo = { workspace = true, features = ["allocator_api"] }
 bytes = { workspace = true }
 serde = { workspace = true }
 snafu = { workspace = true }
 flatbuffers = { workspace = true }
+minivec = { workspace = true }
 async-backtrace = { workspace = true, optional = true }
 
 [features]

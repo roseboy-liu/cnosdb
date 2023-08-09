@@ -1034,8 +1034,10 @@ fn construct_write_lines_points_request(
     db: &str,
 ) -> Result<WritePointsRequest, HttpError> {
     let lines = String::from_utf8_lossy(req.as_ref());
-    let line_protocol_lines = line_protocol_to_lines(&lines, Local::now().timestamp_nanos())
-        .map_err(|e| HttpError::ParseLineProtocol { source: e })?;
+    let arena = bumpalo::Bump::new();
+    let line_protocol_lines =
+        line_protocol_to_lines(&lines, Local::now().timestamp_nanos(), &arena)
+            .map_err(|e| HttpError::ParseLineProtocol { source: e })?;
 
     let points = parse_lines_to_points(db, &line_protocol_lines);
 
