@@ -24,7 +24,6 @@ pub struct VersionSet {
     opt: Arc<Options>,
     /// Maps DBName -> DB
     dbs: HashMap<String, Arc<RwLock<Database>>>,
-    runtime: Arc<Runtime>,
     memory_pool: MemoryPoolRef,
     metrics_register: Arc<MetricsRegister>,
 }
@@ -32,14 +31,12 @@ pub struct VersionSet {
 impl VersionSet {
     pub fn empty(
         opt: Arc<Options>,
-        runtime: Arc<Runtime>,
         memory_pool: MemoryPoolRef,
         metrics_register: Arc<MetricsRegister>,
     ) -> Self {
         Self {
             opt,
             dbs: HashMap::new(),
-            runtime,
             memory_pool,
             metrics_register,
         }
@@ -93,7 +90,6 @@ impl VersionSet {
         Ok(Self {
             dbs,
             opt,
-            runtime,
             memory_pool,
             metrics_register,
         })
@@ -108,6 +104,7 @@ impl VersionSet {
         schema: DatabaseSchema,
         meta: MetaRef,
         memory_pool: MemoryPoolRef,
+        runtime: Arc<Runtime>,
     ) -> Result<Arc<RwLock<Database>>> {
         let sub_register = self.metrics_register.sub_register([
             ("tenant", schema.tenant_name()),
@@ -120,7 +117,7 @@ impl VersionSet {
                 Database::new(
                     schema,
                     self.opt.clone(),
-                    self.runtime.clone(),
+                    runtime,
                     meta.clone(),
                     memory_pool,
                     sub_register,
@@ -208,19 +205,19 @@ impl VersionSet {
         (version_edits, file_metas)
     }
 
-    /// Try to build and send `FlushReq`s to flush job for all ts_families.
-    pub async fn send_flush_req(&self) {
-        for db in self.dbs.values() {
-            for tsf in db.read().await.ts_families().values() {
-                let tsf_inner = tsf.clone();
-                self.runtime.spawn(async move {
-                    let mut tsf = tsf_inner.write().await;
-                    tsf.switch_to_immutable();
-                    tsf.send_flush_req(true).await;
-                });
-            }
-        }
-    }
+    // /// Try to build and send `FlushReq`s to flush job for all ts_families.
+    // pub async fn send_flush_req(&self) {
+    //     for db in self.dbs.values() {
+    //         for tsf in db.read().await.ts_families().values() {
+    //             let tsf_inner = tsf.clone();
+    //             self.runtime.spawn(async move {
+    //                 let mut tsf = tsf_inner.write().await;
+    //                 tsf.switch_to_immutable();
+    //                 tsf.send_flush_req(true).await;
+    //             });
+    //         }
+    //     }
+    // }
 
     /// **Please call this function after system recovered.**
     ///
@@ -260,5 +257,13 @@ impl VersionSet {
         }
 
         None
+    }
+    pub fn build_empty() -> Self {
+        Self {
+            dbs: HashMap::new(),
+            opt: Arc::new(Options::from(&config::Config::default())),
+            metrics_register: Arc::new(MetricsRegister::default()),
+            memory_pool: Arc::new(memory_pool::GreedyMemoryPool::default()),
+        }
     }
 }

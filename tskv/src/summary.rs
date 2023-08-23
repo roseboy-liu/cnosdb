@@ -326,7 +326,6 @@ impl Summary {
             file_no: 0,
             version_set: Arc::new(RwLock::new(VersionSet::empty(
                 opt.clone(),
-                runtime.clone(),
                 memory_pool,
                 metrics_register.clone(),
             ))),
@@ -1139,6 +1138,7 @@ mod test {
                 DatabaseSchema::new("cnosdb", &database),
                 meta_manager.clone(),
                 memory_pool.clone(),
+                runtime.clone(),
             )
             .await
             .unwrap();
@@ -1233,6 +1233,7 @@ mod test {
                 DatabaseSchema::new("cnosdb", &database),
                 meta_manager.clone(),
                 memory_pool.clone(),
+                runtime.clone(),
             )
             .await
             .unwrap();
