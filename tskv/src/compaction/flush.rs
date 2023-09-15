@@ -7,6 +7,7 @@ use models::codec::Encoding;
 use models::{
     utils as model_utils, ColumnId, FieldId, PhysicalDType as ValueType, SeriesId, Timestamp,
 };
+use models::field_value::FieldVal;
 use parking_lot::RwLock;
 use snafu::ResultExt;
 use tokio::sync::mpsc::Sender;
@@ -18,7 +19,7 @@ use utils::BloomFilter;
 use crate::compaction::{CompactTask, FlushReq};
 use crate::context::{GlobalContext, GlobalSequenceContext};
 use crate::error::{self, Result};
-use crate::memcache::{FieldVal, MemCache, SeriesData};
+use crate::memcache::{MemCache, SeriesData};
 use crate::summary::{CompactMeta, CompactMetaBuilder, SummaryTask, VersionEdit};
 use crate::tseries_family::Version;
 use crate::tsm::codec::DataBlockEncoding;
@@ -452,6 +453,7 @@ pub mod flush_tests {
     use memory_pool::{GreedyMemoryPool, MemoryPoolRef};
     use minivec::mini_vec;
     use models::codec::Encoding;
+    use models::field_value::FieldVal;
     use models::schema::{ColumnType, TableColumn, TskvTableSchema};
     use models::{utils as model_utils, ColumnId, FieldId, Timestamp, ValueType};
     use parking_lot::RwLock;
@@ -463,7 +465,7 @@ pub mod flush_tests {
     use crate::file_utils;
     use crate::kv_option::Options;
     use crate::memcache::test::put_rows_to_cache;
-    use crate::memcache::{FieldVal, MemCache};
+    use crate::memcache::MemCache;
     use crate::tseries_family::{LevelInfo, Version};
     use crate::tsm::codec::DataBlockEncoding;
     use crate::tsm::tsm_reader_tests::read_and_check;

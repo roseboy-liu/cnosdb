@@ -133,7 +133,7 @@ impl ExternalTableSchema {
             FileType::ARROW => {
                 return Err(DataFusionError::NotImplemented(
                     "Arrow external table.".to_string(),
-                ))
+                ));
             }
         };
 

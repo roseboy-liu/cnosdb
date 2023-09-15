@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use flatbuffers::{ForwardsUOffset, Vector};
 use memory_pool::{MemoryConsumer, MemoryPoolRef, MemoryReservation};
-use minivec::{mini_vec, MiniVec};
+use minivec::MiniVec;
+use models::field_value::{DataType, FieldVal};
 use models::predicate::domain::TimeRange;
 use models::schema::{
     timestamp_convert, Precision, TableColumn, TskvTableSchema, TskvTableSchemaRef,
@@ -21,99 +22,8 @@ use trace::error;
 use utils::bitset::ImmutBitSet;
 
 use crate::error::Result;
-use crate::{byte_utils, Error, TseriesFamilyId};
-
-#[derive(Debug, Clone)]
-pub enum FieldVal {
-    Float(f64),
-    Integer(i64),
-    Unsigned(u64),
-    Boolean(bool),
-    Bytes(MiniVec<u8>),
-}
-
-impl FieldVal {
-    pub fn value_type(&self) -> ValueType {
-        match self {
-            FieldVal::Float(..) => ValueType::Float,
-            FieldVal::Integer(..) => ValueType::Integer,
-            FieldVal::Unsigned(..) => ValueType::Unsigned,
-            FieldVal::Boolean(..) => ValueType::Boolean,
-            FieldVal::Bytes(..) => ValueType::String,
-        }
-    }
-
-    pub fn data_value(&self, ts: i64) -> DataType {
-        match self {
-            FieldVal::Float(val) => DataType::F64(ts, *val),
-            FieldVal::Integer(val) => DataType::I64(ts, *val),
-            FieldVal::Unsigned(val) => DataType::U64(ts, *val),
-            FieldVal::Boolean(val) => DataType::Bool(ts, *val),
-            FieldVal::Bytes(val) => DataType::Str(ts, val.clone()),
-        }
-    }
-
-    pub fn new(val: MiniVec<u8>, vtype: ValueType) -> FieldVal {
-        match vtype {
-            ValueType::Unsigned => {
-                let val = byte_utils::decode_be_u64(&val);
-                FieldVal::Unsigned(val)
-            }
-            ValueType::Integer => {
-                let val = byte_utils::decode_be_i64(&val);
-                FieldVal::Integer(val)
-            }
-            ValueType::Float => {
-                let val = byte_utils::decode_be_f64(&val);
-                FieldVal::Float(val)
-            }
-            ValueType::Boolean => {
-                let val = byte_utils::decode_be_bool(&val);
-                FieldVal::Boolean(val)
-            }
-            ValueType::String => {
-                //let val = Vec::from(val);
-                FieldVal::Bytes(val)
-            }
-            _ => todo!(),
-        }
-    }
-
-    pub fn heap_size(&self) -> usize {
-        if let FieldVal::Bytes(val) = self {
-            val.capacity()
-        } else {
-            0
-        }
-    }
-}
-
-impl Display for FieldVal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FieldVal::Unsigned(val) => write!(f, "{}", val),
-            FieldVal::Integer(val) => write!(f, "{}", val),
-            FieldVal::Float(val) => write!(f, "{}", val),
-            FieldVal::Boolean(val) => write!(f, "{}", val),
-            FieldVal::Bytes(val) => write!(f, "{:?})", val),
-        }
-    }
-}
-
-impl PartialEq for FieldVal {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (FieldVal::Unsigned(a), FieldVal::Unsigned(b)) => a == b,
-            (FieldVal::Integer(a), FieldVal::Integer(b)) => a == b,
-            (FieldVal::Float(a), FieldVal::Float(b)) => a.eq(b),
-            (FieldVal::Boolean(a), FieldVal::Boolean(b)) => a == b,
-            (FieldVal::Bytes(a), FieldVal::Bytes(b)) => a == b,
-            _ => false,
-        }
-    }
-}
-
-impl Eq for FieldVal {}
+use crate::tsm2::writer::{Column as ColumnData, DataBlock2};
+use crate::{Error, TseriesFamilyId};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RowData {
@@ -420,6 +330,42 @@ impl SeriesData {
             .map(|g| (g.schema.schema_id, g.schema.clone(), &g.rows))
             .collect()
     }
+    pub fn get_schema(&self) -> Option<Arc<TskvTableSchema>> {
+        if let Some(item) = self.groups.back() {
+            return Some(item.schema.clone());
+        }
+        None
+    }
+    pub fn build_data_block(&self) -> Option<DataBlock2> {
+        if let Some(schema) = self.get_schema() {
+            let cols: Vec<ColumnData> = schema
+                .fields()
+                .iter()
+                .map(|col| ColumnData::new(0, col.column_type.clone()))
+                .collect();
+            let mut time_array = Vec::new();
+            let mut cols_desc = Vec::with_capacity(schema.field_num());
+            for (_schema_id, schema, rows) in self.flat_groups() {
+                let mut values: Vec<&RowData> = rows.iter().collect();
+                values.sort_by_key(|row| row.ts);
+                utils::dedup_front_by_key(&mut values, |row| row.ts);
+                for row in values {
+                    time_array.push(row.ts);
+                    for (index, col) in schema.fields().iter().enumerate() {
+                        let field = row.fields.get(index);
+                        if let Some(val) = field {
+                            cols[index].push(val.clone());
+                        } else {
+                            cols[index].push(None);
+                        }
+                        cols_desc.insert(index, col.clone());
+                    }
+                }
+            }
+            return Some(DataBlock2::new(time_array, cols, cols_desc));
+        }
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -441,6 +387,15 @@ pub struct MemCache {
 }
 
 impl MemCache {
+    pub fn to_page(&self) {
+        self.partions.iter().for_each(|p| {
+            let mut part = p.write();
+            part.iter_mut().for_each(|(_k, v)| {
+                let mut data = v.write();
+                data.build_data_block();
+            })
+        });
+    }
     pub fn new(
         tf_id: TseriesFamilyId,
         max_size: u64,
@@ -621,128 +576,18 @@ impl MemCache {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum DataType {
-    U64(i64, u64),
-    I64(i64, i64),
-    Str(i64, MiniVec<u8>),
-    F64(i64, f64),
-    Bool(i64, bool),
-}
-
-impl PartialEq for DataType {
-    fn eq(&self, other: &Self) -> bool {
-        self.timestamp().eq(&other.timestamp())
-    }
-}
-
-impl Eq for DataType {}
-
-impl PartialOrd for DataType {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-/// Only care about timestamps when comparing
-impl Ord for DataType {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.timestamp().cmp(&other.timestamp())
-    }
-}
-
-impl DataType {
-    pub fn new(vtype: ValueType, ts: i64) -> Self {
-        match vtype {
-            ValueType::Unsigned => DataType::U64(ts, 0),
-            ValueType::Integer => DataType::I64(ts, 0),
-            ValueType::Float => DataType::F64(ts, 0.0),
-            ValueType::Boolean => DataType::Bool(ts, false),
-            ValueType::String => DataType::Str(ts, mini_vec![]),
-            _ => todo!(),
-        }
-    }
-    pub fn timestamp(&self) -> i64 {
-        match *self {
-            DataType::U64(ts, ..) => ts,
-            DataType::I64(ts, ..) => ts,
-            DataType::Str(ts, ..) => ts,
-            DataType::F64(ts, ..) => ts,
-            DataType::Bool(ts, ..) => ts,
-        }
-    }
-
-    pub fn with_field_val(ts: Timestamp, field_val: FieldVal) -> Self {
-        match field_val {
-            FieldVal::Float(val) => Self::F64(ts, val),
-            FieldVal::Integer(val) => Self::I64(ts, val),
-            FieldVal::Unsigned(val) => Self::U64(ts, val),
-            FieldVal::Boolean(val) => Self::Bool(ts, val),
-            FieldVal::Bytes(val) => Self::Str(ts, val),
-        }
-    }
-
-    #[cfg(test)]
-    pub fn to_bytes(&self) -> MiniVec<u8> {
-        match self {
-            DataType::U64(t, val) => {
-                let mut buf = mini_vec![0; 16];
-                buf[0..8].copy_from_slice(t.to_be_bytes().as_slice());
-                buf[8..16].copy_from_slice(val.to_be_bytes().as_slice());
-                buf
-            }
-            DataType::I64(t, val) => {
-                let mut buf = mini_vec![0; 16];
-                buf[0..8].copy_from_slice(t.to_be_bytes().as_slice());
-                buf[8..16].copy_from_slice(val.to_be_bytes().as_slice());
-                buf
-            }
-            DataType::F64(t, val) => {
-                let mut buf = mini_vec![0; 16];
-                buf[0..8].copy_from_slice(t.to_be_bytes().as_slice());
-                buf[8..16].copy_from_slice(val.to_be_bytes().as_slice());
-                buf
-            }
-            DataType::Str(t, val) => {
-                let buf_len = 8 + val.len();
-                let mut buf = mini_vec![0; buf_len];
-                buf[0..8].copy_from_slice(t.to_be_bytes().as_slice());
-                buf[8..buf_len].copy_from_slice(val);
-                buf
-            }
-            DataType::Bool(t, val) => {
-                let mut buf = mini_vec![0; 9];
-                buf[0..8].copy_from_slice(t.to_be_bytes().as_slice());
-                buf[8] = if *val { 1_u8 } else { 0_u8 };
-                buf
-            }
-        }
-    }
-}
-
-impl Display for DataType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DataType::U64(ts, val) => write!(f, "({}, {})", ts, val),
-            DataType::I64(ts, val) => write!(f, "({}, {})", ts, val),
-            DataType::Str(ts, val) => write!(f, "({}, {:?})", ts, val),
-            DataType::F64(ts, val) => write!(f, "({}, {})", ts, val),
-            DataType::Bool(ts, val) => write!(f, "({}, {})", ts, val),
-        }
-    }
-}
-
 pub(crate) mod test {
     use std::collections::{HashMap, LinkedList};
     use std::mem::size_of;
     use std::sync::Arc;
 
+    use models::field_value::FieldVal;
     use models::predicate::domain::TimeRange;
     use models::schema::TskvTableSchema;
     use models::{SchemaId, SeriesId, Timestamp};
     use parking_lot::RwLock;
 
-    use super::{FieldVal, MemCache, RowData, RowGroup};
+    use super::{MemCache, RowData, RowGroup};
 
     pub fn put_rows_to_cache(
         cache: &MemCache,
@@ -817,11 +662,12 @@ mod test_memcache {
 
     use datafusion::arrow::datatypes::TimeUnit;
     use memory_pool::{GreedyMemoryPool, MemoryPool};
+    use models::field_value::FieldVal;
     use models::predicate::domain::TimeRange;
     use models::schema::{ColumnType, TableColumn, TskvTableSchema};
     use models::{SeriesId, ValueType};
 
-    use super::{FieldVal, MemCache, RowData, RowGroup};
+    use super::{MemCache, RowData, RowGroup};
 
     #[test]
     fn test_write_group() {
@@ -836,7 +682,7 @@ mod test_memcache {
         }
 
         #[rustfmt::skip]
-        let mut schema_1 = TskvTableSchema::new(
+            let mut schema_1 = TskvTableSchema::new(
             "test_tenant".to_string(), "test_db".to_string(), "test_table".to_string(),
             vec![
                 TableColumn::new_time_column(1, TimeUnit::Nanosecond),
@@ -847,7 +693,7 @@ mod test_memcache {
         );
         schema_1.schema_id = 1;
         #[rustfmt::skip]
-        let row_group_1 = RowGroup {
+            let row_group_1 = RowGroup {
             schema: Arc::new(schema_1),
             range: TimeRange::new(1, 3),
             rows: LinkedList::from([
@@ -869,7 +715,7 @@ mod test_memcache {
         }
 
         #[rustfmt::skip]
-        let mut schema_2 = TskvTableSchema::new(
+            let mut schema_2 = TskvTableSchema::new(
             "test_tenant".to_string(), "test_db".to_string(), "test_table".to_string(),
             vec![
                 TableColumn::new_time_column(1, TimeUnit::Nanosecond),
@@ -881,7 +727,7 @@ mod test_memcache {
         );
         schema_2.schema_id = 2;
         #[rustfmt::skip]
-        let row_group_2 = RowGroup {
+            let row_group_2 = RowGroup {
             schema: Arc::new(schema_2),
             range: TimeRange::new(3, 5),
             rows: LinkedList::from([

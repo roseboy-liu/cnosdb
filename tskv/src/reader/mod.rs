@@ -4,8 +4,8 @@ use datafusion::arrow::record_batch::RecordBatch;
 use futures::Stream;
 pub use iterator::*;
 use models::schema::PhysicalCType;
+use models::field_value::DataType;
 
-use crate::memcache::DataType;
 use crate::{Error, Result};
 
 mod iterator;

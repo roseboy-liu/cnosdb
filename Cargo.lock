@@ -3367,6 +3367,7 @@ dependencies = [
  "async-trait",
  "bcrypt",
  "bincode",
+ "byteorder",
  "chrono",
  "config",
  "datafusion",
@@ -3376,6 +3377,7 @@ dependencies = [
  "flatbuffers 22.12.6",
  "futures",
  "libc",
+ "minivec",
  "openssl",
  "parking_lot 0.12.1",
  "pin-project",
@@ -5990,6 +5992,7 @@ checksum = "3528ecfd12c466c6f163363caf2d02a71161dd5e1cc6ae7b34207ea2d42d81ed"
 name = "tskv"
 version = "2.3.2"
 dependencies = [
+ "arrow-array",
  "async-backtrace",
  "async-trait",
  "bincode",

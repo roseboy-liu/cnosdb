@@ -5,9 +5,9 @@ use std::fmt::{Debug, Display, Formatter};
 use minivec::MiniVec;
 use models::predicate::domain::{TimeRange, TimeRanges};
 use models::{PhysicalDType as ValueType, Timestamp};
+use models::field_value::DataType;
 use trace::error;
 
-use crate::memcache::DataType;
 use crate::tsm::codec::{
     get_bool_codec, get_encoding, get_f64_codec, get_i64_codec, get_str_codec, get_ts_codec,
     get_u64_codec, DataBlockEncoding,
@@ -996,9 +996,9 @@ impl EncodedDataBlock {
 pub mod test {
 
     use minivec::mini_vec;
+    use models::field_value::DataType;
     use models::predicate::domain::TimeRange;
 
-    use crate::memcache::DataType;
     use crate::tsm::codec::DataBlockEncoding;
     use crate::tsm::DataBlock;
 

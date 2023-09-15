@@ -57,6 +57,7 @@ ctrlc = "3"
 dashmap = "5.2"
 derive_builder = "0.12.0"
 arrow = { version = "42.0.0", features = ["prettyprint"] }
+arrow-array = { version = "42.0.0" }
 arrow-schema = { version = "42.0.0", features = ["serde"] }
 arrow-flight = { version = "42.0.0" }
 datafusion-proto = { git = "https://github.com/cnosdb/arrow-datafusion.git", branch = "27.0.0" }
