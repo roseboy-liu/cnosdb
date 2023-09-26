@@ -198,7 +198,7 @@ impl Column {
             }
         }
     }
-    pub fn col_to_page(&self, desc: TableColumn) -> Page {
+    pub fn col_to_page(&self, desc: &TableColumn) -> Page {
         let len = self.valid.byte_len() as u32;
         let mut buf = vec![];
         let (min, max) = match &self.data {
@@ -263,23 +263,26 @@ pub enum ColumnData {
 
 #[derive(Debug, Clone)]
 pub struct DataBlock2 {
-    ts: Vec<i64>,
+    ts: Column,
+    ts_desc: TableColumn,
     cols: Vec<Column>,
     cols_desc: Vec<TableColumn>,
 }
 
 impl DataBlock2 {
-    pub fn new(ts: Vec<i64>, cols: Vec<Column>, cols_desc: Vec<TableColumn>) -> Self {
+    pub fn new(ts: Column, ts_desc: TableColumn, cols: Vec<Column>, cols_desc: Vec<TableColumn>) -> Self {
         DataBlock2 {
             ts,
+            ts_desc,
             cols,
             cols_desc,
         }
     }
     //todo dont forgot build time column to pages
     pub fn block_to_page(&self) -> Vec<Page> {
-        let mut pages = vec![];
-        for (col, desc) in self.cols.iter().zip(self.cols_desc) {
+        let mut pages = Vec::with_capacity(self.cols.len() + 1);
+        pages.push(self.ts.col_to_page(&self.ts_desc));
+        for (col, desc) in self.cols.iter().zip(self.cols_desc.iter()) {
             pages.push(col.col_to_page(desc));
         }
         pages

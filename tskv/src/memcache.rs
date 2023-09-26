@@ -1,21 +1,18 @@
-use std::collections::{HashMap, LinkedList};
+use std::collections::{BTreeMap, HashMap, LinkedList};
 use std::fmt::Display;
 use std::mem::size_of_val;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use datafusion::arrow::datatypes::TimeUnit;
 
 use flatbuffers::{ForwardsUOffset, Vector};
 use memory_pool::{MemoryConsumer, MemoryPoolRef, MemoryReservation};
 use minivec::MiniVec;
 use models::field_value::{DataType, FieldVal};
 use models::predicate::domain::TimeRange;
-use models::schema::{
-    timestamp_convert, Precision, TableColumn, TskvTableSchema, TskvTableSchemaRef,
-};
+use models::schema::{timestamp_convert, Precision, TableColumn, TskvTableSchema, TskvTableSchemaRef, ColumnType};
 use models::utils::split_id;
-use models::{
-    ColumnId, FieldId, PhysicalDType as ValueType, RwLockRef, SchemaId, SeriesId, Timestamp,
-};
+use models::{ColumnId, FieldId, PhysicalDType as ValueType, RwLockRef, schema, SchemaId, SeriesId, Timestamp};
 use parking_lot::RwLock;
 use protos::models::{Column, FieldType};
 use trace::error;
@@ -336,21 +333,21 @@ impl SeriesData {
         }
         None
     }
-    pub fn build_data_block(&self) -> Option<DataBlock2> {
+    pub fn build_data_block(&self) -> Option<(&str, SeriesId, DataBlock2)> {
         if let Some(schema) = self.get_schema() {
             let cols: Vec<ColumnData> = schema
                 .fields()
                 .iter()
                 .map(|col| ColumnData::new(0, col.column_type.clone()))
                 .collect();
-            let mut time_array = Vec::new();
+            let mut time_array = ColumnData::new(0, ColumnType::Time(TimeUnit::from(schema.time_column_precision())));
             let mut cols_desc = Vec::with_capacity(schema.field_num());
             for (_schema_id, schema, rows) in self.flat_groups() {
                 let mut values: Vec<&RowData> = rows.iter().collect();
                 values.sort_by_key(|row| row.ts);
                 utils::dedup_front_by_key(&mut values, |row| row.ts);
                 for row in values {
-                    time_array.push(row.ts);
+                    time_array.push(Some(FieldVal::Integer(row.ts)));
                     for (index, col) in schema.fields().iter().enumerate() {
                         let field = row.fields.get(index);
                         if let Some(val) = field {
@@ -362,7 +359,7 @@ impl SeriesData {
                     }
                 }
             }
-            return Some(DataBlock2::new(time_array, cols, cols_desc));
+            return Some((schema.name.as_str(), self.series_id, DataBlock2::new(time_array, schema.time_column(), cols, cols_desc)));
         }
         None
     }
@@ -387,14 +384,26 @@ pub struct MemCache {
 }
 
 impl MemCache {
-    pub fn to_page(&self) {
+    pub fn to_chunk_group(&self) -> Vec<BTreeMap<String, BTreeMap<SeriesId, DataBlock2>>> {
+        let mut chunk_groups = Vec::with_capacity(self.part_count);
         self.partions.iter().for_each(|p| {
-            let mut part = p.write();
-            part.iter_mut().for_each(|(_k, v)| {
-                let mut data = v.write();
-                data.build_data_block();
-            })
+            let mut chunk_group = BTreeMap::new();
+            let mut part = p.read();
+            part.iter().for_each(|(_k, v)| {
+                let mut data = v.read();
+                if let Some((table_name, series_id, datablock)) = data.build_data_block() {
+                    if let Some(chunk) = chunk_group.get_mut(table_name) {
+                        chunk.insert(series_id, datablock);
+                    } else {
+                        let mut chunk = BTreeMap::new();
+                        chunk.insert(series_id, datablock);
+                        chunk_group.insert(table_name.to_string(), chunk);
+                    }
+                }
+            });
+            chunk_groups.push(chunk_group)
         });
+        chunk_groups
     }
     pub fn new(
         tf_id: TseriesFamilyId,
