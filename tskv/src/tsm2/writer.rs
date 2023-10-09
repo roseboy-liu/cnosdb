@@ -1,15 +1,23 @@
+use std::cmp::{max, min};
 use std::collections::BTreeMap;
+use std::io::IoSlice;
+use std::path::PathBuf;
 
 use models::codec::Encoding;
 use models::field_value::FieldVal;
 use models::predicate::domain::TimeRange;
 use models::schema::{ColumnType, TableColumn};
-use models::ValueType;
+use models::{PhysicalDType, SeriesId, ValueType};
 use snafu::ResultExt;
+use models::utils::unite_id;
 use utils::bitset::BitSet;
+use utils::BloomFilter;
+use crate::byte_utils::decode_be_i64;
 
 use crate::error::IOSnafu;
 use crate::file_system::file::cursor::FileCursor;
+use crate::file_system::file_manager;
+use crate::file_utils::{make_tsm_file_name};
 use crate::tsm::codec::{
     get_bool_codec, get_f64_codec, get_i64_codec, get_str_codec, get_u64_codec,
 };
@@ -18,6 +26,7 @@ use crate::tsm2::page::{
     Page, PageMeta, PageStatistics, PageWriteSpec, TableMeta,
 };
 use crate::Result;
+use crate::tsm2::{BLOOM_FILTER_BITS, TsmWriteData};
 
 // #[derive(Debug, Clone)]
 // pub enum Array {
@@ -131,7 +140,7 @@ impl Column {
                 }
                 self.valid.append_set(1);
             }
-            (ColumnData::F64(ref mut value, min, max), None) => {
+            (ColumnData::F64(ref mut value, ..), None) => {
                 value.push(0.0);
                 self.valid.append_unset(1);
             }
@@ -145,7 +154,7 @@ impl Column {
                 value.push(val);
                 self.valid.append_set(1);
             }
-            (ColumnData::I64(ref mut value, min, max), None) => {
+            (ColumnData::I64(ref mut value, ..), None) => {
                 value.push(0);
                 self.valid.append_unset(1);
             }
@@ -159,7 +168,7 @@ impl Column {
                 value.push(val);
                 self.valid.append_set(1);
             }
-            (ColumnData::U64(ref mut value, min, max), None) => {
+            (ColumnData::U64(ref mut value, ..), None) => {
                 value.push(0);
                 self.valid.append_unset(1);
             }
@@ -175,21 +184,21 @@ impl Column {
                 value.push(val);
                 self.valid.append_set(1);
             }
-            (ColumnData::String(ref mut value, min, max), None) => {
+            (ColumnData::String(ref mut value, ..), None) => {
                 value.push(String::new());
                 self.valid.append_unset(1);
             }
             (ColumnData::Bool(ref mut value, min, max), Some(FieldVal::Boolean(val))) => {
-                if *max < val {
+                if !(*max) & val {
                     *max = val;
                 }
-                if *min > val {
+                if *min & !val {
                     *min = val;
                 }
                 value.push(val);
                 self.valid.append_set(1);
             }
-            (ColumnData::Bool(ref mut value, min, max), None) => {
+            (ColumnData::Bool(ref mut value, ..), None) => {
                 value.push(false);
                 self.valid.append_unset(1);
             }
@@ -198,36 +207,36 @@ impl Column {
             }
         }
     }
-    pub fn col_to_page(&self, desc: &TableColumn) -> Page {
+    pub fn col_to_page(&self, desc: &TableColumn, time_range: Option<TimeRange>) -> Page {
         let len = self.valid.byte_len() as u32;
         let mut buf = vec![];
-        let (min, max) = match &self.data {
+        let (min, max, value_type) = match &self.data {
             ColumnData::F64(array, min, max) => {
                 let encoder = get_f64_codec(desc.encoding);
-                encoder.encode(&array, &mut buf).unwrap();
-                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()))
+                encoder.encode(array, &mut buf).unwrap();
+                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()), PhysicalDType::Float)
             }
             ColumnData::I64(array, min, max) => {
                 let encoder = get_i64_codec(desc.encoding);
-                encoder.encode(&array, &mut buf).unwrap();
-                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()))
+                encoder.encode(array, &mut buf).unwrap();
+                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()), PhysicalDType::Integer)
             }
             ColumnData::U64(array, min, max) => {
                 let encoder = get_u64_codec(desc.encoding);
-                encoder.encode(&array, &mut buf).unwrap();
-                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()))
+                encoder.encode(array, &mut buf).unwrap();
+                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()), PhysicalDType::Unsigned)
             }
             ColumnData::String(array, min, max) => {
                 let encoder = get_str_codec(desc.encoding);
                 encoder
-                    .encode(array.iter().into_bytes().collect(), &mut buf)
+                    .encode(&array.iter().map(|it| it.as_bytes()).collect::<Vec<_>>(), &mut buf)
                     .unwrap();
-                (min.into_bytes(), max.into_bytes())
+                (min.as_bytes().to_vec(), max.as_bytes().to_vec(), PhysicalDType::String)
             }
             ColumnData::Bool(array, min, max) => {
                 let encoder = get_bool_codec(desc.encoding);
-                encoder.encode(&array, &mut buf).unwrap();
-                (vec![*min as u8], vec![*max as u8])
+                encoder.encode(array, &mut buf).unwrap();
+                (vec![*min as u8], vec![*max as u8], PhysicalDType::Boolean)
             }
         };
         let mut data = vec![];
@@ -235,12 +244,21 @@ impl Column {
         data.extend_from_slice(self.valid.bytes());
         data.extend_from_slice(&buf);
         let bytes = bytes::Bytes::from(data);
+        let time_range = match time_range {
+            None => {
+                TimeRange{
+                    max_ts: decode_be_i64(&max),
+                    min_ts: decode_be_i64(&min),
+                }
+            }
+            Some(time_range) => time_range
+        };
         let meta = PageMeta {
             num_values: self.valid.len() as u32,
-            column: desc,
-            time_range: None,
+            column: desc.clone(),
+            time_range,
             statistic: PageStatistics {
-                primitive_type: ValueType::Unknown,
+                primitive_type: value_type,
                 null_count: None,
                 distinct_count: None,
                 max_value: Some(max),
@@ -270,7 +288,12 @@ pub struct DataBlock2 {
 }
 
 impl DataBlock2 {
-    pub fn new(ts: Column, ts_desc: TableColumn, cols: Vec<Column>, cols_desc: Vec<TableColumn>) -> Self {
+    pub fn new(
+        ts: Column,
+        ts_desc: TableColumn,
+        cols: Vec<Column>,
+        cols_desc: Vec<TableColumn>,
+    ) -> Self {
         DataBlock2 {
             ts,
             ts_desc,
@@ -281,9 +304,11 @@ impl DataBlock2 {
     //todo dont forgot build time column to pages
     pub fn block_to_page(&self) -> Vec<Page> {
         let mut pages = Vec::with_capacity(self.cols.len() + 1);
-        pages.push(self.ts.col_to_page(&self.ts_desc));
+        let ts_page = self.ts.col_to_page(&self.ts_desc, None);
+        let time_range = ts_page.meta.time_range;
+        pages.push(self.ts.col_to_page(&self.ts_desc, None));
         for (col, desc) in self.cols.iter().zip(self.cols_desc.iter()) {
-            pages.push(col.col_to_page(desc));
+            pages.push(col.col_to_page(desc, Some(time_range)));
         }
         pages
     }
@@ -321,10 +346,17 @@ const TSM_MAGIC: [u8; 4] = 0x12CDA16_u32.to_be_bytes();
 const VERSION: [u8; 1] = [1];
 
 pub struct Tsm2Writer {
+    file_id: u64,
+    min_ts: i64,
+    max_ts: i64,
+    size: usize,
+
+    bloom_filter: BloomFilter,
+
     writer: FileCursor,
     options: WriteOptions,
     /// <table < series, Chunk>>
-    page_specs: BTreeMap<String, BTreeMap<String, Chunk>>,
+    page_specs: BTreeMap<String, BTreeMap<SeriesId, Chunk>>,
     /// <table, ChunkGroup>
     chunk_specs: BTreeMap<String, ChunkGroup>,
     /// [ChunkGroupWriteSpec]
@@ -335,28 +367,73 @@ pub struct Tsm2Writer {
 
 //MutableRecordBatch
 impl Tsm2Writer {
-    pub fn new(writer: FileCursor) -> Self {
+    pub async fn open(path_buf: PathBuf, file_id: u64) -> Result<Self> {
+        let tsm_path = make_tsm_file_name(path_buf, file_id);
+        let file_cursor = file_manager::create_file(tsm_path).await?;
+        let writer = Self::new(file_cursor.into(), file_id);
+        Ok(writer)
+    }
+    pub fn new(writer: FileCursor, file_id: u64) -> Self {
         Self {
+            file_id,
+            max_ts: i64::MIN,
+            min_ts: i64::MAX,
+            size: 0,
+            bloom_filter: BloomFilter::new(BLOOM_FILTER_BITS),
             writer,
             options: Default::default(),
             page_specs: Default::default(),
             chunk_specs: Default::default(),
+            chunk_group_specs: Default::default(),
+            footer: Default::default(),
             state: State::Initialised,
         }
     }
+
+    pub fn file_id(&self) -> u64 {
+        self.file_id
+    }
+
+    pub fn min_ts(&self) -> i64 {
+        self.min_ts
+    }
+
+    pub fn max_ts(&self) -> i64 {
+        self.max_ts
+    }
+
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    pub fn bloom_filter(&self) -> &BloomFilter {
+        &self.bloom_filter
+    }
+
     pub async fn write_header(&mut self) -> Result<usize> {
-        self.writer
-            .write_vec([TSM_MAGIC.to_vec(), VERSION.to_vec()])
+        let size = self.writer
+            .write_vec(
+                [
+                    IoSlice::new(TSM_MAGIC.as_slice()),
+                    IoSlice::new(VERSION.as_slice()),
+                ]
+                .as_mut_slice(),
+            )
             .await
-            .context(IOSnafu)
+            .context(IOSnafu)?;
+        self.state = State::Started;
+        self.size += size;
+        Ok(size)
     }
 
     /// todo: write footer
     pub async fn write_footer(&mut self) -> Result<usize> {
-        self.writer
+        let size = self.writer
             .write(&self.footer.serialize()?)
             .await
-            .context(IOSnafu)
+            .context(IOSnafu)?;
+        self.size += size;
+        Ok(size)
     }
 
     pub async fn write_chunk_group(&mut self) -> Result<()> {
@@ -364,6 +441,7 @@ impl Tsm2Writer {
             let chunk_group_offset = self.writer.pos();
             let buf = group.serialize()?;
             let chunk_group_size = self.writer.write(&buf).await?;
+            self.size += chunk_group_size;
             let chunk_group_spec = ChunkGroupWriteSpec {
                 name: table.clone(),
                 chunk_group_offset,
@@ -381,11 +459,12 @@ impl Tsm2Writer {
         let chunk_group_specs_offset = self.writer.pos();
         let buf = self.chunk_group_specs.serialize()?;
         let chunk_group_specs_size = self.writer.write(&buf).await?;
+        self.size += chunk_group_specs_size;
         let time_range = self.chunk_group_specs.time_range();
         let footer = Footer {
             version: 2_u8,
             time_range,
-            table: TableMeta::new(chunk_group_specs_offset, chunk_group_specs_size),
+            table: TableMeta::new(self.bloom_filter.bytes().to_vec(), chunk_group_specs_offset, chunk_group_specs_size),
         };
         self.footer = footer;
         Ok(())
@@ -397,9 +476,12 @@ impl Tsm2Writer {
                 let chunk_offset = self.writer.pos();
                 let buf = chunk.serialize()?;
                 let chunk_size = self.writer.write(&buf).await?;
+                self.size += chunk_size;
                 let time_range = chunk.time_range();
+                self.min_ts = min(self.min_ts, time_range.min_ts);
+                self.max_ts = max(self.max_ts, time_range.max_ts);
                 let chunk_spec = ChunkWriteSpec {
-                    series: series.clone(),
+                    series_id: *series,
                     chunk_offset,
                     chunk_size,
                     statics: ChunkStatics { time_range },
@@ -414,34 +496,45 @@ impl Tsm2Writer {
     }
     pub async fn write_data(
         &mut self,
-        groups: BTreeMap<String, BTreeMap<String, Vec<Page>>>,
+        groups: TsmWriteData,
     ) -> Result<()> {
         if self.state == State::Initialised {
             self.write_header().await?;
         }
-
         // write page data
         for (table, group) in groups {
             for (series, pages) in group {
                 let mut time_range = TimeRange::none();
                 for page in pages {
+                    let field_id = unite_id(page.meta.column.id, series);
                     let offset = self.writer.pos();
                     let size = self.writer.write(&page.bytes).await?;
-                    time_range.merge(&page.meta.time_range.unwrap());
+                    self.size += size;
+                    time_range.merge(&page.meta.time_range);
                     let spec = PageWriteSpec {
                         offset,
                         size,
                         meta: page.meta,
                     };
+                    self.bloom_filter.insert(&field_id.to_be_bytes());
                     self.page_specs
                         .entry(table.clone())
                         .or_default()
-                        .entry(series.clone())
+                        .entry(series)
                         .or_default()
                         .push(spec);
                 }
             }
         }
+        Ok(())
+    }
+
+    pub async fn finish(&mut self) -> Result<()> {
+        self.write_chunk().await?;
+        self.write_chunk_group().await?;
+        self.write_chunk_group_specs().await?;
+        self.write_footer().await?;
+        self.state = State::Finished;
         Ok(())
     }
 }

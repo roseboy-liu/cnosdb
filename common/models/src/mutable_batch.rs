@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use utils::bitset::BitSet;
 
 use crate::field_value::FieldVal;
-use crate::schema::{PhysicalCType};
-use crate::{Error, Result, PhysicalDType};
+use crate::schema::PhysicalCType;
+use crate::{Error, PhysicalDType, Result};
 
 #[derive(Debug, Default, Clone)]
 pub struct MutableBatch {

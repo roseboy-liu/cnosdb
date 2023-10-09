@@ -1,4 +1,4 @@
-use models::ValueType;
+use models::{PhysicalDType};
 
 pub trait NativeType: std::fmt::Debug + Send + Sync + 'static + Copy + Clone {
     type Bytes: AsRef<[u8]> + for<'a> TryFrom<&'a [u8], Error = std::array::TryFromSliceError>;
@@ -9,7 +9,7 @@ pub trait NativeType: std::fmt::Debug + Send + Sync + 'static + Copy + Clone {
 
     fn ord(&self, other: &Self) -> std::cmp::Ordering;
 
-    const TYPE: ValueType;
+    const TYPE: PhysicalDType;
 }
 
 macro_rules! native {
@@ -31,14 +31,14 @@ macro_rules! native {
                 self.partial_cmp(other).unwrap_or(std::cmp::Ordering::Equal)
             }
 
-            const TYPE: ValueType = $value_type;
+            const TYPE: PhysicalDType = $value_type;
         }
     };
 }
 
-native!(i64, ValueType::Integer);
-native!(u64, ValueType::Unsigned);
-native!(f64, ValueType::Float);
+native!(i64, PhysicalDType::Integer);
+native!(u64, PhysicalDType::Unsigned);
+native!(f64, PhysicalDType::Float);
 
 /// Returns the ordering of two binary values.
 pub fn ord_binary<'a>(a: &'a [u8], b: &'a [u8]) -> std::cmp::Ordering {

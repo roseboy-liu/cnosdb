@@ -4,7 +4,7 @@ use std::io::Cursor;
 use byteorder::{BigEndian, ReadBytesExt};
 use minivec::{mini_vec, MiniVec};
 
-use crate::{Timestamp, ValueType};
+use crate::{PhysicalDType, Timestamp, ValueType};
 
 #[derive(Debug, Clone)]
 pub enum FieldVal {
@@ -16,13 +16,13 @@ pub enum FieldVal {
 }
 
 impl FieldVal {
-    pub fn value_type(&self) -> ValueType {
+    pub fn value_type(&self) -> PhysicalDType {
         match self {
-            FieldVal::Float(..) => ValueType::Float,
-            FieldVal::Integer(..) => ValueType::Integer,
-            FieldVal::Unsigned(..) => ValueType::Unsigned,
-            FieldVal::Boolean(..) => ValueType::Boolean,
-            FieldVal::Bytes(..) => ValueType::String,
+            FieldVal::Float(..) => PhysicalDType::Float,
+            FieldVal::Integer(..) => PhysicalDType::Integer,
+            FieldVal::Unsigned(..) => PhysicalDType::Unsigned,
+            FieldVal::Boolean(..) => PhysicalDType::Boolean,
+            FieldVal::Bytes(..) => PhysicalDType::String,
         }
     }
 
@@ -99,13 +99,34 @@ impl PartialEq for FieldVal {
 
 impl Eq for FieldVal {}
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum DataType {
     U64(i64, u64),
     I64(i64, i64),
     Str(i64, MiniVec<u8>),
     F64(i64, f64),
     Bool(i64, bool),
+}
+
+impl PartialEq for DataType {
+    fn eq(&self, other: &Self) -> bool {
+        self.timestamp().eq(&other.timestamp())
+    }
+}
+
+impl Eq for DataType {}
+
+impl PartialOrd for DataType {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Only care about timestamps when comparing
+impl Ord for DataType {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.timestamp().cmp(&other.timestamp())
+    }
 }
 
 impl DataType {
@@ -139,7 +160,6 @@ impl DataType {
         }
     }
 
-    #[cfg(test)]
     pub fn to_bytes(&self) -> MiniVec<u8> {
         match self {
             DataType::U64(t, val) => {

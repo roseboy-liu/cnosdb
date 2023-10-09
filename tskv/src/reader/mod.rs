@@ -3,8 +3,8 @@ use std::pin::Pin;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::Stream;
 pub use iterator::*;
-use models::schema::PhysicalCType;
 use models::field_value::DataType;
+use models::schema::PhysicalCType;
 
 use crate::{Error, Result};
 

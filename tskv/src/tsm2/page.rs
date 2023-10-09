@@ -1,34 +1,34 @@
 use models::predicate::domain::TimeRange;
 use models::schema::TableColumn;
-use models::ValueType;
+use models::{PhysicalDType, SeriesId};
 use serde::{Deserialize, Serialize};
-use snafu::ResultExt;
+use crate::Error;
 
-use crate::error::{DeserializeSnafu, Result, SerializeSnafu};
+use crate::error::{Result};
 
 pub struct Page {
     pub(crate) bytes: bytes::Bytes,
     pub(crate) meta: PageMeta,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct PageMeta {
     pub(crate) num_values: u32,
-    pub(crate) column: Option<TableColumn>,
-    pub(crate) time_range: Option<TimeRange>,
-    pub(crate) statistic: Option<PageStatistics>,
+    pub(crate) column: TableColumn,
+    pub(crate) time_range: TimeRange,
+    pub(crate) statistic: PageStatistics,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct PageStatistics {
-    pub(crate) primitive_type: ValueType,
+    pub(crate) primitive_type: PhysicalDType,
     pub(crate) null_count: Option<i64>,
     pub(crate) distinct_count: Option<i64>,
     pub(crate) max_value: Option<Vec<u8>>,
     pub(crate) min_value: Option<Vec<u8>>,
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct PageWriteSpec {
     pub(crate) offset: u64,
     pub(crate) size: usize,
@@ -46,11 +46,11 @@ impl Chunk {
         Self { pages: Vec::new() }
     }
     pub fn serialize(&self) -> Result<Vec<u8>> {
-        bincode::serialize(&self).context(SerializeSnafu)
+        bincode::serialize(&self).map_err(|e| Error::Serialize { source: e.into() })
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).context(DeserializeSnafu)
+        bincode::deserialize(bytes).map_err(|e| Error::Deserialize { source: e.into() })
     }
     pub fn push(&mut self, page: PageWriteSpec) {
         self.pages.push(page);
@@ -66,7 +66,7 @@ impl Chunk {
 
 #[derive(Serialize, Deserialize)]
 pub struct ChunkWriteSpec {
-    pub(crate) series: String,
+    pub(crate) series_id: SeriesId,
     pub(crate) chunk_offset: u64,
     pub(crate) chunk_size: usize,
     pub(crate) statics: ChunkStatics,
@@ -89,11 +89,11 @@ impl ChunkGroup {
         Self { chunks: Vec::new() }
     }
     pub fn serialize(&self) -> Result<Vec<u8>> {
-        bincode::serialize(&self).context(SerializeSnafu)
+        bincode::serialize(&self).map_err(|e| Error::Serialize { source: e.into() })
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).context(DeserializeSnafu)
+        bincode::deserialize(bytes).map_err(|e| Error::Deserialize { source: e.into() })
     }
 
     pub fn push(&mut self, chunk: ChunkWriteSpec) {
@@ -130,16 +130,22 @@ pub struct ChunkGroupMeta {
     pub(crate) tables: Vec<ChunkGroupWriteSpec>,
 }
 
+impl Default for ChunkGroupMeta {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChunkGroupMeta {
     pub fn new() -> Self {
         Self { tables: Vec::new() }
     }
     pub fn serialize(&self) -> Result<Vec<u8>> {
-        bincode::serialize(&self).context(SerializeSnafu)
+        bincode::serialize(&self).map_err(|e| Error::Serialize { source: e.into() })
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).context(DeserializeSnafu)
+        bincode::deserialize(bytes).map_err(|e| Error::Deserialize { source: e.into() })
     }
 
     pub fn push(&mut self, table: ChunkGroupWriteSpec) {
@@ -159,7 +165,7 @@ impl ChunkGroupMeta {
 
 // pub const FOOTER_SIZE: i64 = ;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Footer {
     pub(crate) version: u8,
     pub(crate) time_range: TimeRange,
@@ -177,26 +183,27 @@ impl Footer {
         }
     }
     pub fn serialize(&self) -> Result<Vec<u8>> {
-        bincode::serialize(&self).context(SerializeSnafu)
+        bincode::serialize(&self).map_err(|e| Error::Serialize { source: e.into() })
     }
 
     pub fn deserialize(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).context(DeserializeSnafu)
+        bincode::deserialize(bytes).map_err(|e| Error::Deserialize { source: e.into() })
     }
 }
 
 ///  7 + 8 + 8 = 23
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct TableMeta {
-    // bloomfilter: Vec<u8>,
+    bloom_filter: Vec<u8>,
     // 7 Byte
     chunk_group_offset: u64,
     chunk_group_size: usize,
 }
 
 impl TableMeta {
-    pub fn new(chunk_group_offset: u64, chunk_group_size: usize) -> Self {
+    pub fn new(bloom_filter: Vec<u8>, chunk_group_offset: u64, chunk_group_size: usize) -> Self {
         Self {
+            bloom_filter,
             chunk_group_offset,
             chunk_group_size,
         }

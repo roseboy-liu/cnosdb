@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use models::ValueType;
+use models::{PhysicalDType};
 
 use super::Statistics;
 use crate::error::{Error, Result};
@@ -19,8 +19,8 @@ impl Statistics for BooleanStatistics {
         self
     }
 
-    fn physical_type(&self) -> &ValueType {
-        &ValueType::Boolean
+    fn physical_type(&self) -> &PhysicalDType {
+        &PhysicalDType::Boolean
     }
 
     fn null_count(&self) -> Option<i64> {
@@ -62,7 +62,7 @@ pub fn read(v: &PageStatistics) -> Result<Arc<dyn Statistics>> {
 
 pub fn write(v: &BooleanStatistics) -> PageStatistics {
     PageStatistics {
-        primitive_type: v.physical_type().clone(),
+        primitive_type: *v.physical_type(),
         null_count: v.null_count,
         distinct_count: v.distinct_count,
         max_value: v.max_value.map(|x| vec![x as u8]),

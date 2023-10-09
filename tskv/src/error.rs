@@ -229,13 +229,13 @@ pub enum Error {
     // Internal Error
     #[snafu(display("{}", source))]
     Serialize {
-        source: std::io::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 
     // Internal Error
     #[snafu(display("{}", source))]
     Deserialize {
-        source: std::io::Error,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
 }
 

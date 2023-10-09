@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use models::ValueType;
+use models::{PhysicalDType};
 
 use super::Statistics;
 use crate::error::{Error, Result};
@@ -32,7 +32,7 @@ impl<T: types::NativeType> Statistics for PrimitiveStatistics<T> {
         self
     }
 
-    fn physical_type(&self) -> &ValueType {
+    fn physical_type(&self) -> &PhysicalDType {
         &T::TYPE
     }
 
@@ -43,7 +43,7 @@ impl<T: types::NativeType> Statistics for PrimitiveStatistics<T> {
 
 pub fn read<T: types::NativeType>(
     v: &PageStatistics,
-    primitive_type: ValueType,
+    _primitive_type: PhysicalDType,
 ) -> Result<Arc<dyn Statistics>> {
     if let Some(ref v) = v.max_value {
         if v.len() != std::mem::size_of::<T>() {

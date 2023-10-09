@@ -21,7 +21,7 @@ pub struct ScanConfig {
     /// Schema before `projection` is applied. It contains the all columns that may
     /// appear in the files. It does not include table partition columns
     /// that may be added.
-    pub file_schema: Vec<SchemaRef>,
+    pub file_schema: SchemaRef,
     /// List of files to be processed, grouped into partitions
     ///
     /// Each file must have a schema of `file_schema` or a subset. If

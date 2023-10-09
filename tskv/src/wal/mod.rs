@@ -719,7 +719,6 @@ mod test {
 
     use minivec::MiniVec;
     use models::codec::Encoding;
-    use models::schema::Precision;
     use models::field_value::FieldVal;
     use models::schema::{make_owner, Precision};
     use models::Timestamp;

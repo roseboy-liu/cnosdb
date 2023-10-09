@@ -6,9 +6,9 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{SchemaRef, TimeUnit};
 use flatbuffers::{FlatBufferBuilder, WIPOffset};
+use models::mutable_batch::{ColumnData, MutableBatch};
 use models::schema::{PhysicalCType as ColumnType, TskvTableSchemaRef};
 use models::PhysicalDType as ValueType;
-use models::mutable_batch::{ColumnData, MutableBatch};
 use protos::models::{
     Column as FbColumn, ColumnBuilder, ColumnType as FbColumnType, FieldType, PointsBuilder,
     TableBuilder, ValuesBuilder,

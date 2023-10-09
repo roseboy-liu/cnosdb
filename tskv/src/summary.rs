@@ -1,3 +1,4 @@
+use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::fs::{remove_file, rename};
@@ -267,8 +268,7 @@ impl VersionEdit {
         }
         self.has_file_id = true;
         self.file_id = self.file_id.max(compact_meta.file_id);
-        self.max_level_ts = max_level_ts;
-        self.tsf_id = compact_meta.tsf_id;
+        self.max_level_ts = max(self.max_level_ts, max_level_ts);
         self.add_files.push(compact_meta);
     }
 

@@ -3,9 +3,9 @@ use std::error::Error;
 use std::fmt::{Debug, Display, Formatter};
 
 use minivec::MiniVec;
+use models::field_value::DataType;
 use models::predicate::domain::{TimeRange, TimeRanges};
 use models::{PhysicalDType as ValueType, Timestamp};
-use models::field_value::DataType;
 use trace::error;
 
 use crate::tsm::codec::{
