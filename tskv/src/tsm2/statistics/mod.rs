@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 pub use binary::BinaryStatistics;
 pub use boolean::BooleanStatistics;
-use models::{PhysicalDType};
+use models::PhysicalDType;
 pub use primitive::PrimitiveStatistics;
 
 use crate::error::Result;
@@ -85,11 +85,9 @@ pub fn deserialize_statistics(
         PhysicalDType::Unsigned => primitive::read::<u64>(statistics, primitive_type),
         PhysicalDType::Float => primitive::read::<f64>(statistics, primitive_type),
         PhysicalDType::String => binary::read(statistics),
-        _ => {
-            Err(Error::OutOfSpec {
-                reason: "unknown data type".to_string(),
-            })
-        }
+        _ => Err(Error::OutOfSpec {
+            reason: "unknown data type".to_string(),
+        }),
     }
 }
 
@@ -97,9 +95,15 @@ pub fn deserialize_statistics(
 pub fn serialize_statistics(statistics: &dyn Statistics) -> PageStatistics {
     match statistics.physical_type() {
         PhysicalDType::Boolean => boolean::write(statistics.as_any().downcast_ref().unwrap()),
-        PhysicalDType::Integer => primitive::write::<i64>(statistics.as_any().downcast_ref().unwrap()),
-        PhysicalDType::Unsigned => primitive::write::<u64>(statistics.as_any().downcast_ref().unwrap()),
-        PhysicalDType::Float => primitive::write::<f64>(statistics.as_any().downcast_ref().unwrap()),
+        PhysicalDType::Integer => {
+            primitive::write::<i64>(statistics.as_any().downcast_ref().unwrap())
+        }
+        PhysicalDType::Unsigned => {
+            primitive::write::<u64>(statistics.as_any().downcast_ref().unwrap())
+        }
+        PhysicalDType::Float => {
+            primitive::write::<f64>(statistics.as_any().downcast_ref().unwrap())
+        }
         PhysicalDType::String => binary::write(statistics.as_any().downcast_ref().unwrap()),
         _ => {
             panic!("Unexpected data type")

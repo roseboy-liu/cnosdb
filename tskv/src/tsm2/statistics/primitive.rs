@@ -1,7 +1,7 @@
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 
-use models::{PhysicalDType};
+use models::PhysicalDType;
 
 use super::Statistics;
 use crate::error::{Error, Result};

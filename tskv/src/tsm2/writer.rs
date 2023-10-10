@@ -9,24 +9,23 @@ use models::predicate::domain::TimeRange;
 use models::schema::{ColumnType, TableColumn};
 use models::{PhysicalDType, SeriesId, ValueType};
 use snafu::ResultExt;
-use models::utils::unite_id;
 use utils::bitset::BitSet;
 use utils::BloomFilter;
-use crate::byte_utils::decode_be_i64;
 
+use crate::byte_utils::decode_be_i64;
 use crate::error::IOSnafu;
 use crate::file_system::file::cursor::FileCursor;
 use crate::file_system::file_manager;
-use crate::file_utils::{make_tsm_file_name};
+use crate::file_utils::make_tsm_file_name;
 use crate::tsm::codec::{
     get_bool_codec, get_f64_codec, get_i64_codec, get_str_codec, get_u64_codec,
 };
 use crate::tsm2::page::{
     Chunk, ChunkGroup, ChunkGroupMeta, ChunkGroupWriteSpec, ChunkStatics, ChunkWriteSpec, Footer,
-    Page, PageMeta, PageStatistics, PageWriteSpec, TableMeta,
+    Page, PageMeta, PageStatistics, PageWriteSpec, SeriesMeta, TableMeta,
 };
+use crate::tsm2::{TsmWriteData, BLOOM_FILTER_BITS};
 use crate::Result;
-use crate::tsm2::{BLOOM_FILTER_BITS, TsmWriteData};
 
 // #[derive(Debug, Clone)]
 // pub enum Array {
@@ -214,24 +213,43 @@ impl Column {
             ColumnData::F64(array, min, max) => {
                 let encoder = get_f64_codec(desc.encoding);
                 encoder.encode(array, &mut buf).unwrap();
-                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()), PhysicalDType::Float)
+                (
+                    Vec::from(min.to_le_bytes()),
+                    Vec::from(max.to_le_bytes()),
+                    PhysicalDType::Float,
+                )
             }
             ColumnData::I64(array, min, max) => {
                 let encoder = get_i64_codec(desc.encoding);
                 encoder.encode(array, &mut buf).unwrap();
-                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()), PhysicalDType::Integer)
+                (
+                    Vec::from(min.to_le_bytes()),
+                    Vec::from(max.to_le_bytes()),
+                    PhysicalDType::Integer,
+                )
             }
             ColumnData::U64(array, min, max) => {
                 let encoder = get_u64_codec(desc.encoding);
                 encoder.encode(array, &mut buf).unwrap();
-                (Vec::from(min.to_le_bytes()), Vec::from(max.to_le_bytes()), PhysicalDType::Unsigned)
+                (
+                    Vec::from(min.to_le_bytes()),
+                    Vec::from(max.to_le_bytes()),
+                    PhysicalDType::Unsigned,
+                )
             }
             ColumnData::String(array, min, max) => {
                 let encoder = get_str_codec(desc.encoding);
                 encoder
-                    .encode(&array.iter().map(|it| it.as_bytes()).collect::<Vec<_>>(), &mut buf)
+                    .encode(
+                        &array.iter().map(|it| it.as_bytes()).collect::<Vec<_>>(),
+                        &mut buf,
+                    )
                     .unwrap();
-                (min.as_bytes().to_vec(), max.as_bytes().to_vec(), PhysicalDType::String)
+                (
+                    min.as_bytes().to_vec(),
+                    max.as_bytes().to_vec(),
+                    PhysicalDType::String,
+                )
             }
             ColumnData::Bool(array, min, max) => {
                 let encoder = get_bool_codec(desc.encoding);
@@ -245,13 +263,11 @@ impl Column {
         data.extend_from_slice(&buf);
         let bytes = bytes::Bytes::from(data);
         let time_range = match time_range {
-            None => {
-                TimeRange{
-                    max_ts: decode_be_i64(&max),
-                    min_ts: decode_be_i64(&min),
-                }
-            }
-            Some(time_range) => time_range
+            None => TimeRange {
+                max_ts: decode_be_i64(&max),
+                min_ts: decode_be_i64(&min),
+            },
+            Some(time_range) => time_range,
         };
         let meta = PageMeta {
             num_values: self.valid.len() as u32,
@@ -351,8 +367,9 @@ pub struct Tsm2Writer {
     max_ts: i64,
     size: usize,
 
-    bloom_filter: BloomFilter,
-
+    series_bloom_filter: BloomFilter,
+    // todo: table object id bloom filter
+    // table_bloom_filter: BloomFilter,
     writer: FileCursor,
     options: WriteOptions,
     /// <table < series, Chunk>>
@@ -379,7 +396,7 @@ impl Tsm2Writer {
             max_ts: i64::MIN,
             min_ts: i64::MAX,
             size: 0,
-            bloom_filter: BloomFilter::new(BLOOM_FILTER_BITS),
+            series_bloom_filter: BloomFilter::new(BLOOM_FILTER_BITS),
             writer,
             options: Default::default(),
             page_specs: Default::default(),
@@ -406,12 +423,13 @@ impl Tsm2Writer {
         self.size
     }
 
-    pub fn bloom_filter(&self) -> &BloomFilter {
-        &self.bloom_filter
+    pub fn series_bloom_filter(&self) -> &BloomFilter {
+        &self.series_bloom_filter
     }
 
     pub async fn write_header(&mut self) -> Result<usize> {
-        let size = self.writer
+        let size = self
+            .writer
             .write_vec(
                 [
                     IoSlice::new(TSM_MAGIC.as_slice()),
@@ -428,7 +446,8 @@ impl Tsm2Writer {
 
     /// todo: write footer
     pub async fn write_footer(&mut self) -> Result<usize> {
-        let size = self.writer
+        let size = self
+            .writer
             .write(&self.footer.serialize()?)
             .await
             .context(IOSnafu)?;
@@ -455,7 +474,7 @@ impl Tsm2Writer {
         Ok(())
     }
 
-    pub async fn write_chunk_group_specs(&mut self) -> Result<()> {
+    pub async fn write_chunk_group_specs(&mut self, series: SeriesMeta) -> Result<()> {
         let chunk_group_specs_offset = self.writer.pos();
         let buf = self.chunk_group_specs.serialize()?;
         let chunk_group_specs_size = self.writer.write(&buf).await?;
@@ -464,13 +483,15 @@ impl Tsm2Writer {
         let footer = Footer {
             version: 2_u8,
             time_range,
-            table: TableMeta::new(self.bloom_filter.bytes().to_vec(), chunk_group_specs_offset, chunk_group_specs_size),
+            table: TableMeta::new(chunk_group_specs_offset, chunk_group_specs_size),
+            series,
         };
         self.footer = footer;
         Ok(())
     }
 
-    pub async fn write_chunk(&mut self) -> Result<()> {
+    pub async fn write_chunk(&mut self) -> Result<SeriesMeta> {
+        let chunk_offset = self.writer.pos();
         for (table, group) in &self.page_specs {
             for (series, chunk) in group {
                 let chunk_offset = self.writer.pos();
@@ -490,14 +511,18 @@ impl Tsm2Writer {
                     .entry(table.clone())
                     .or_default()
                     .push(chunk_spec);
+                self.series_bloom_filter.insert(&series.to_be_bytes());
             }
         }
-        Ok(())
+        let chunk_size = self.writer.pos() - chunk_offset;
+        let series = SeriesMeta::new(
+            self.series_bloom_filter.bytes().to_vec(),
+            chunk_offset,
+            chunk_size,
+        );
+        Ok(series)
     }
-    pub async fn write_data(
-        &mut self,
-        groups: TsmWriteData,
-    ) -> Result<()> {
+    pub async fn write_data(&mut self, groups: TsmWriteData) -> Result<()> {
         if self.state == State::Initialised {
             self.write_header().await?;
         }
@@ -506,7 +531,6 @@ impl Tsm2Writer {
             for (series, pages) in group {
                 let mut time_range = TimeRange::none();
                 for page in pages {
-                    let field_id = unite_id(page.meta.column.id, series);
                     let offset = self.writer.pos();
                     let size = self.writer.write(&page.bytes).await?;
                     self.size += size;
@@ -516,7 +540,6 @@ impl Tsm2Writer {
                         size,
                         meta: page.meta,
                     };
-                    self.bloom_filter.insert(&field_id.to_be_bytes());
                     self.page_specs
                         .entry(table.clone())
                         .or_default()
@@ -530,9 +553,9 @@ impl Tsm2Writer {
     }
 
     pub async fn finish(&mut self) -> Result<()> {
-        self.write_chunk().await?;
+        let series_meta = self.write_chunk().await?;
         self.write_chunk_group().await?;
-        self.write_chunk_group_specs().await?;
+        self.write_chunk_group_specs(series_meta).await?;
         self.write_footer().await?;
         self.state = State::Finished;
         Ok(())

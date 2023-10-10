@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+
 use models::SeriesId;
+
 use crate::tsm2::page::Page;
 
 pub(crate) mod page;
@@ -17,6 +19,6 @@ const INDEX_META_SIZE: usize = 11;
 const BLOCK_META_SIZE: usize = 44;
 const BLOOM_FILTER_SIZE: usize = 64;
 const BLOOM_FILTER_BITS: u64 = 512; // 64 * 8
-const FOOTER_SIZE: usize = BLOOM_FILTER_SIZE + 8; // 72
+const FOOTER_SIZE: usize = 121;
 
 pub type TsmWriteData = BTreeMap<String, BTreeMap<SeriesId, Vec<Page>>>; // (table, (series_id, pages))

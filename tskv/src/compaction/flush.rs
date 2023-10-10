@@ -68,9 +68,10 @@ impl FlushTask {
     ) -> Result<()> {
         let mut tsm_writer =
             Tsm2Writer::open(self.path_tsm.clone(), self.global_context.file_id_next()).await?;
-        let mut delta_writer = Tsm2Writer::open(self.path_delta.clone(), self.global_context.file_id_next()).await?;
+        let mut delta_writer =
+            Tsm2Writer::open(self.path_delta.clone(), self.global_context.file_id_next()).await?;
         for memcache in self.mem_caches {
-            let (group,delta_group) = memcache.read().to_chunk_group(version.clone());
+            let (group, delta_group) = memcache.read().to_chunk_group(version.clone());
             for data in group {
                 tsm_writer.write_data(data).await?;
             }
@@ -81,12 +82,30 @@ impl FlushTask {
         tsm_writer.finish().await?;
         delta_writer.finish().await?;
 
-        file_metas.insert(tsm_writer.file_id(), Arc::new(tsm_writer.bloom_filter().clone()));
-        file_metas.insert(delta_writer.file_id(), Arc::new(delta_writer.bloom_filter().clone()));
+        file_metas.insert(
+            tsm_writer.file_id(),
+            Arc::new(tsm_writer.series_bloom_filter().clone()),
+        );
+        file_metas.insert(
+            delta_writer.file_id(),
+            Arc::new(delta_writer.series_bloom_filter().clone()),
+        );
 
         let compact_meta_builder = CompactMetaBuilder::new(self.ts_family_id);
-        let tsm_meta = compact_meta_builder.build(tsm_writer.file_id(), tsm_writer.size() as u64, 1, tsm_writer.min_ts(), tsm_writer.max_ts());
-        let delta_meta = compact_meta_builder.build(delta_writer.file_id(), delta_writer.size() as u64, 0, delta_writer.min_ts(), delta_writer.max_ts());
+        let tsm_meta = compact_meta_builder.build(
+            tsm_writer.file_id(),
+            tsm_writer.size() as u64,
+            1,
+            tsm_writer.min_ts(),
+            tsm_writer.max_ts(),
+        );
+        let delta_meta = compact_meta_builder.build(
+            delta_writer.file_id(),
+            delta_writer.size() as u64,
+            0,
+            delta_writer.min_ts(),
+            delta_writer.max_ts(),
+        );
 
         let mut edit = VersionEdit::new(self.ts_family_id);
         let mut max_level_ts = version.max_level_ts;

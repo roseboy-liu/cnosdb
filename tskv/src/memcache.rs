@@ -13,20 +13,17 @@ use models::schema::{
     timestamp_convert, ColumnType, Precision, TableColumn, TskvTableSchema, TskvTableSchemaRef,
 };
 use models::utils::split_id;
-use models::{
-    ColumnId, FieldId, RwLockRef, SchemaId, SeriesId, Timestamp,
-};
+use models::{ColumnId, FieldId, RwLockRef, SchemaId, SeriesId, Timestamp};
 use parking_lot::RwLock;
 use protos::models::{Column, FieldType};
 use trace::error;
 use utils::bitset::ImmutBitSet;
 
 use crate::error::Result;
-
-use crate::tsm2::writer::{Column as ColumnData, DataBlock2};
-use crate::{Error, TseriesFamilyId};
 use crate::tseries_family::Version;
+use crate::tsm2::writer::{Column as ColumnData, DataBlock2};
 use crate::tsm2::TsmWriteData;
+use crate::{Error, TseriesFamilyId};
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RowData {
@@ -339,7 +336,10 @@ impl SeriesData {
         }
         None
     }
-    pub fn build_data_block(&self, version: Arc<Version>) -> Option<(String, DataBlock2, DataBlock2)> {
+    pub fn build_data_block(
+        &self,
+        version: Arc<Version>,
+    ) -> Option<(String, DataBlock2, DataBlock2)> {
         if let Some(schema) = self.get_schema() {
             let mut cols: Vec<ColumnData> = schema
                 .fields()
@@ -387,7 +387,8 @@ impl SeriesData {
                     schema.time_column(),
                     delta_cols,
                     cols_desc,
-            )));
+                ),
+            ));
         }
         None
     }
@@ -421,7 +422,9 @@ impl MemCache {
             let part = p.read();
             part.iter().for_each(|(series_id, v)| {
                 let data = v.read();
-                if let Some((table_name,datablock, delta_datablock)) = data.build_data_block(version.clone()) {
+                if let Some((table_name, datablock, delta_datablock)) =
+                    data.build_data_block(version.clone())
+                {
                     let datablock = datablock.block_to_page();
                     let delta_datablock = delta_datablock.block_to_page();
                     if let Some(chunk) = chunk_group.get_mut(&table_name) {
