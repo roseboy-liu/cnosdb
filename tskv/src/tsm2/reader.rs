@@ -40,34 +40,52 @@ impl TSM2Reader {
         })
     }
 
-    pub async fn prepare_footer(&mut self) -> Result<()> {
-        if self.footer.is_none() {
-            self.footer = Some(read_footer(self.reader.clone()).await?);
+    pub async fn footer(&mut self) -> Result<&Footer> {
+        match self.footer {
+            Some(ref footer) => Ok(footer),
+            None => {
+                self.footer = Some(read_footer(self.reader.clone()).await?);
+                Ok(self.footer.as_ref().unwrap())
+            }
         }
-        Ok(())
     }
 
-    pub async fn prepare(&mut self) -> Result<()> {
-        if self.footer.is_none() {
-            self.footer = Some(read_footer(self.reader.clone()).await?);
+    pub async fn chunk_group_meta(&mut self) -> Result<&ChunkGroupMeta> {
+        match self.chunk_group_meta {
+            Some(ref chunk_group_meta) => Ok(chunk_group_meta),
+            None => {
+                self.chunk_group_meta = Some(
+                    read_chunk_group_meta(self.reader.clone(), self.footer()).await?
+                );
+                Ok(self.chunk_group_meta.as_ref().unwrap())
+            }
         }
-        if self.chunk_group_meta.is_none() {
-            self.chunk_group_meta =
-                Some(read_chunk_group_meta(self.reader.clone(), self.footer.as_ref().unwrap()).await?);
-        }
-        if self.chunk_group.is_none() {
-            self.chunk_group = Some(
-                read_chunk_groups(self.reader.clone(), self.chunk_group_meta.as_ref().unwrap())
-                    .await?,
-            );
-        }
-        if self.chunk.is_none() {
-            self.chunk = Some(
-                read_chunk(self.reader.clone(), self.chunk_group.as_ref().unwrap().clone()).await?,
-            );
-        }
-        Ok(())
     }
+
+    pub async fn chunk_group(&mut self) -> Result<&BTreeMap<String, ChunkGroup>> {
+        match self.chunk_group {
+            Some(ref chunk_group) => Ok(chunk_group),
+            None => {
+                self.chunk_group = Some(
+                    read_chunk_groups(self.reader.clone(), self.chunk_group_meta()).await?,
+                );
+                Ok(self.chunk_group.as_ref().unwrap())
+            }
+        }
+    }
+
+    pub async fn chunk(&mut self) -> Result<&BTreeMap<String, BTreeMap<SeriesId, Chunk>>> {
+        match self.chunk {
+            Some(ref chunk) => Ok(chunk),
+            None => {
+                self.chunk = Some(
+                    read_chunk(self.reader.clone(), self.chunk_group()).await?,
+                );
+                Ok(self.chunk.as_ref().unwrap())
+            }
+        }
+    }
+
 
     pub async fn read_pages(
         &mut self,
@@ -75,25 +93,18 @@ impl TSM2Reader {
         column_id: &[ColumnId],
     ) -> Result<Vec<Page>> {
         let mut res = Vec::new();
-        self.prepare_footer().await?;
-        if let Some(ref footer) = self.footer {
-            let bloom_filter = BloomFilter::with_data(footer.series.bloom_filter());
-            for sid in series_ids {
-                if bloom_filter.contains(&sid.as_bytes()) {
-                    self.prepare().await?;
-                    if let Some(ref chunk) = self.chunk {
-                        for cid in column_id {
-                            for (_, chunks) in chunk {
-                                if let Some(chunk) = chunks.get(sid) {
-                                    for pages in chunk.pages() {
-                                        if pages.meta.column.id == *cid {
-                                            let page = read_page(self.reader.clone(), pages).await?;
-                                            res.push(page);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+        let footer = self.footer().await?;
+        let bloom_filter = BloomFilter::with_data(footer.series().bloom_filter());
+        for sid in series_ids {
+            if !bloom_filter.contains(&sid.as_bytes()) {
+                continue
+            }
+            let chunk = self.chunk().await?.iter().filter_map(|(_, chunk)| chunk.get(sid)).collect::<Vec<_>>();
+            for c in chunk {
+                for pages in c.pages() {
+                    if column_id.contains(&pages.meta.column.id) {
+                        let page = read_page(self.reader.clone(), pages).await?;
+                        res.push(page);
                     }
                 }
             }
