@@ -5,7 +5,7 @@ use models::SeriesId;
 use crate::tsm2::page::Page;
 
 pub(crate) mod page;
-mod reader;
+pub mod reader;
 mod scan_config;
 mod statistics;
 mod tsm_exec;

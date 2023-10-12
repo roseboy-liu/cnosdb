@@ -11,7 +11,7 @@ pub struct Page {
     pub(crate) meta: PageMeta,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageMeta {
     pub(crate) num_values: u32,
     pub(crate) column: TableColumn,
@@ -19,7 +19,7 @@ pub struct PageMeta {
     pub(crate) statistic: PageStatistics,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PageStatistics {
     pub(crate) primitive_type: PhysicalDType,
     pub(crate) null_count: Option<i64>,
@@ -28,7 +28,7 @@ pub struct PageStatistics {
     pub(crate) min_value: Option<Vec<u8>>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PageWriteSpec {
     pub(crate) offset: u64,
     pub(crate) size: usize,
@@ -54,7 +54,7 @@ impl PageWriteSpec {
 }
 
 /// A chunk of data for a series at least two columns
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct Chunk {
     pages: Vec<PageWriteSpec>,
 }
@@ -90,7 +90,7 @@ impl Chunk {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkWriteSpec {
     pub(crate) series_id: SeriesId,
     pub(crate) chunk_offset: u64,
@@ -131,13 +131,13 @@ impl ChunkWriteSpec {
 }
 
 /// ChunkStatics
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkStatics {
     pub(crate) time_range: TimeRange,
 }
 
 /// A group of chunks for a table
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize)]
 pub struct ChunkGroup {
     pub(crate) chunks: Vec<ChunkWriteSpec>,
 }
@@ -176,7 +176,7 @@ impl ChunkGroup {
 
 pub type TableId = u64;
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkGroupWriteSpec {
     // pub(crate) id: TableId,
     pub(crate) name: String,
@@ -225,7 +225,7 @@ impl ChunkGroupWriteSpec {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkGroupMeta {
     pub(crate) tables: Vec<ChunkGroupWriteSpec>,
 }
@@ -269,7 +269,7 @@ impl ChunkGroupMeta {
 
 // pub const FOOTER_SIZE: i64 = ;
 
-#[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, Eq, PartialEq)]
 pub struct Footer {
     pub(crate) version: u8,
     pub(crate) time_range: TimeRange,
@@ -314,7 +314,7 @@ impl Footer {
 }
 
 ///  7 + 8 + 8 = 23
-#[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct TableMeta {
     // todo: bloomfilter, store table object id
     // bloom_filter: Vec<u8>,
@@ -341,7 +341,7 @@ impl TableMeta {
 }
 
 /// 16 + 8 + 8 = 32
-#[derive(Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SeriesMeta {
     bloom_filter: Vec<u8>,
     // 16 Byte

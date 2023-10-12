@@ -7,8 +7,9 @@ use tokio::runtime::Runtime;
 use trace::trace;
 
 use crate::tseries_family::{ColumnFile, SuperVersion};
-use crate::tsm::{self, BlockMeta, TsmReader};
+use crate::tsm::{self, BlockMeta};
 use crate::{Error, Result};
+use crate::tsm2::reader::TSM2Reader;
 
 #[derive(PartialEq, Eq)]
 pub enum TimeRangeCmp {
@@ -198,7 +199,7 @@ fn get_series_timestamps_in_caches(
 
 struct ReadTask {
     /// Reader for a file.
-    tsm_reader: Arc<TsmReader>,
+    tsm_reader: Arc<TSM2Reader>,
     /// BlockMeta in a file.
     block_meta: Arc<BlockMeta>,
     /// Time range by BlockMeta::time_range() .

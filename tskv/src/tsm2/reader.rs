@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::fmt::{Debug, Formatter};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -15,6 +16,7 @@ use crate::file_utils;
 use crate::tsm2::page::{Chunk, ChunkGroup, ChunkGroupMeta, Footer, Page, PageWriteSpec};
 use crate::tsm2::{TsmWriteData, FOOTER_SIZE};
 
+#[derive(Clone)]
 pub struct TSM2Reader {
     file_id: u64,
     reader: Arc<AsyncFile>,
@@ -55,7 +57,7 @@ impl TSM2Reader {
             Some(ref chunk_group_meta) => Ok(chunk_group_meta),
             None => {
                 self.chunk_group_meta = Some(
-                    read_chunk_group_meta(self.reader.clone(), self.footer()).await?
+                    read_chunk_group_meta(self.reader.clone(), self.footer().await?).await?
                 );
                 Ok(self.chunk_group_meta.as_ref().unwrap())
             }
@@ -67,7 +69,7 @@ impl TSM2Reader {
             Some(ref chunk_group) => Ok(chunk_group),
             None => {
                 self.chunk_group = Some(
-                    read_chunk_groups(self.reader.clone(), self.chunk_group_meta()).await?,
+                    read_chunk_groups(self.reader.clone(), self.chunk_group_meta().await?).await?,
                 );
                 Ok(self.chunk_group.as_ref().unwrap())
             }
@@ -79,7 +81,7 @@ impl TSM2Reader {
             Some(ref chunk) => Ok(chunk),
             None => {
                 self.chunk = Some(
-                    read_chunk(self.reader.clone(), self.chunk_group()).await?,
+                    read_chunk(self.reader.clone(), self.chunk_group().await?).await?,
                 );
                 Ok(self.chunk.as_ref().unwrap())
             }
@@ -95,6 +97,7 @@ impl TSM2Reader {
         let mut res = Vec::new();
         let footer = self.footer().await?;
         let bloom_filter = BloomFilter::with_data(footer.series().bloom_filter());
+        let reader = self.reader.clone();
         for sid in series_ids {
             if !bloom_filter.contains(&sid.as_bytes()) {
                 continue
@@ -103,7 +106,7 @@ impl TSM2Reader {
             for c in chunk {
                 for pages in c.pages() {
                     if column_id.contains(&pages.meta.column.id) {
-                        let page = read_page(self.reader.clone(), pages).await?;
+                        let page = read_page(reader.clone(), pages).await?;
                         res.push(page);
                     }
                 }
@@ -119,6 +122,18 @@ impl TSM2Reader {
         let chunk = read_chunk(self.reader.clone(), &chunk_group).await?;
         let pages = read_pages(self.reader.clone(), chunk).await?;
         Ok(pages)
+    }
+}
+
+impl Debug for TSM2Reader {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TSMReader")
+            .field("file_id", &self.file_id)
+            .field("footer", &self.footer)
+            .field("chunk_group_meta", &self.chunk_group_meta)
+            .field("chunk_group", &self.chunk_group)
+            .field("chunk", &self.chunk)
+            .finish()
     }
 }
 

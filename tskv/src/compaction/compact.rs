@@ -17,15 +17,16 @@ use crate::summary::{CompactMeta, VersionEdit};
 use crate::tseries_family::TseriesFamily;
 use crate::tsm::{
     self, BlockMeta, BlockMetaIterator, DataBlock, EncodedDataBlock, IndexIterator, IndexMeta,
-    TsmReader, TsmWriter,
+    TsmWriter,
 };
 use crate::{ColumnFileId, Error, LevelId, TseriesFamilyId};
+use crate::tsm2::reader::TSM2Reader;
 
 /// Temporary compacting data block meta
 #[derive(Clone)]
 pub(crate) struct CompactingBlockMeta {
     reader_idx: usize,
-    reader: Arc<TsmReader>,
+    reader: Arc<TSM2Reader>,
     meta: BlockMeta,
 }
 
@@ -63,7 +64,7 @@ impl Display for CompactingBlockMeta {
 }
 
 impl CompactingBlockMeta {
-    pub fn new(tsm_reader_idx: usize, tsm_reader: Arc<TsmReader>, block_meta: BlockMeta) -> Self {
+    pub fn new(tsm_reader_idx: usize, tsm_reader: Arc<TSM2Reader>, block_meta: BlockMeta) -> Self {
         Self {
             reader_idx: tsm_reader_idx,
             reader: tsm_reader,
@@ -365,13 +366,13 @@ impl CompactingBlock {
 
 struct CompactingFile {
     i: usize,
-    tsm_reader: Arc<TsmReader>,
+    tsm_reader: Arc<TSM2Reader>,
     index_iter: BufferedIterator<IndexIterator>,
     field_id: Option<FieldId>,
 }
 
 impl CompactingFile {
-    fn new(i: usize, tsm_reader: Arc<TsmReader>) -> Self {
+    fn new(i: usize, tsm_reader: Arc<TSM2Reader>) -> Self {
         let mut index_iter = BufferedIterator::new(tsm_reader.index_iterator());
         let first_field_id = index_iter.peek().map(|i| i.field_id());
         Self {
@@ -414,7 +415,7 @@ impl PartialOrd for CompactingFile {
 }
 
 pub(crate) struct CompactIterator {
-    tsm_readers: Vec<Arc<TsmReader>>,
+    tsm_readers: Vec<Arc<TSM2Reader>>,
     compacting_files: BinaryHeap<Pin<Box<CompactingFile>>>,
     /// Maximum values in generated CompactingBlock
     max_data_block_size: usize,
@@ -458,7 +459,7 @@ impl Default for CompactIterator {
 
 impl CompactIterator {
     pub(crate) fn new(
-        tsm_readers: Vec<Arc<TsmReader>>,
+        tsm_readers: Vec<Arc<TSM2Reader>>,
         max_data_block_size: usize,
         decode_non_overlap_blocks: bool,
     ) -> Self {

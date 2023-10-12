@@ -33,8 +33,9 @@ use crate::compute::count::count_column_non_null_values;
 use crate::error::Result;
 use crate::reader::Cursor;
 use crate::tseries_family::{ColumnFile, SuperVersion, Version};
-use crate::tsm::{BlockMetaIterator, DataBlockReader, TsmReader};
+use crate::tsm::{BlockMetaIterator, DataBlockReader};
 use crate::{EngineRef, Error};
+use crate::tsm2::reader::TSM2Reader;
 
 pub type CursorPtr = Box<dyn Cursor>;
 
@@ -395,7 +396,7 @@ impl QueryOption {
 }
 
 pub struct FieldFileLocation {
-    reader: Arc<TsmReader>,
+    reader: Arc<TSM2Reader>,
     block_meta_iter: BlockMetaIterator,
     time_ranges: Arc<TimeRanges>,
 
@@ -619,7 +620,7 @@ impl Level0TSDataStream {
 
 impl FieldFileLocation {
     pub fn new(
-        reader: Arc<TsmReader>,
+        reader: Arc<TSM2Reader>,
         time_ranges: Arc<TimeRanges>,
         block_meta_iter: BlockMetaIterator,
         vtype: ValueType,

@@ -31,6 +31,7 @@ use crate::summary::{CompactMeta, VersionEdit};
 use crate::tsm::{DataBlock, TsmReader, TsmTombstone};
 use crate::Error::CommonError;
 use crate::{ColumnFileId, LevelId, TseriesFamilyId};
+use crate::tsm2::reader::TSM2Reader;
 
 #[derive(Debug)]
 pub struct ColumnFile {
@@ -44,7 +45,7 @@ pub struct ColumnFile {
     compacting: AtomicBool,
 
     path: PathBuf,
-    tsm_reader_cache: Weak<ShardedCache<String, Arc<TsmReader>>>,
+    tsm_reader_cache: Weak<ShardedCache<String, Arc<TSM2Reader>>>,
 }
 
 impl ColumnFile {
@@ -52,7 +53,7 @@ impl ColumnFile {
         meta: &CompactMeta,
         path: impl AsRef<Path>,
         field_id_filter: Arc<BloomFilter>,
-        tsm_reader_cache: Weak<ShardedCache<String, Arc<TsmReader>>>,
+        tsm_reader_cache: Weak<ShardedCache<String, Arc<TSM2Reader>>>,
     ) -> Self {
         Self {
             file_id: meta.file_id,
@@ -253,7 +254,7 @@ impl LevelInfo {
         &mut self,
         compact_meta: &CompactMeta,
         field_filter: Arc<BloomFilter>,
-        tsm_reader_cache: Weak<ShardedCache<String, Arc<TsmReader>>>,
+        tsm_reader_cache: Weak<ShardedCache<String, Arc<TSM2Reader>>>,
     ) {
         let file_path = if compact_meta.is_delta {
             let base_dir = self.storage_opt.delta_dir(&self.database, self.tsf_id);
@@ -370,7 +371,7 @@ pub struct Version {
     /// The max timestamp of write batch in wal flushed to column file.
     pub max_level_ts: i64,
     pub levels_info: [LevelInfo; 5],
-    pub tsm_reader_cache: Arc<ShardedCache<String, Arc<TsmReader>>>,
+    pub tsm_reader_cache: Arc<ShardedCache<String, Arc<TSM2Reader>>>,
 }
 
 impl Version {
@@ -382,7 +383,7 @@ impl Version {
         last_seq: u64,
         levels_info: [LevelInfo; 5],
         max_level_ts: i64,
-        tsm_reader_cache: Arc<ShardedCache<String, Arc<TsmReader>>>,
+        tsm_reader_cache: Arc<ShardedCache<String, Arc<TSM2Reader>>>,
     ) -> Self {
         Self {
             ts_family_id,
@@ -510,7 +511,7 @@ impl Version {
         vec![]
     }
 
-    pub async fn get_tsm_reader(&self, path: impl AsRef<Path>) -> Result<Arc<TsmReader>> {
+    pub async fn get_tsm_reader(&self, path: impl AsRef<Path>) -> Result<Arc<TSM2Reader>> {
         let path = path.as_ref().display().to_string();
         let tsm_reader = match self.tsm_reader_cache.get(&path).await {
             Some(val) => val.clone(),
@@ -519,7 +520,7 @@ impl Version {
                 match lock.get(&path) {
                     Some(val) => val.clone(),
                     None => {
-                        let tsm_reader = TsmReader::open(&path).await?;
+                        let tsm_reader = TSM2Reader::open(&path).await?;
                         lock.insert(path, Arc::new(tsm_reader)).unwrap().clone()
                     }
                 }
