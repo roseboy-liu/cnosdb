@@ -408,8 +408,7 @@ pub struct MemCache {
     memory: RwLock<MemoryReservation>,
 
     part_count: usize,
-    // This u64 comes from split_id(SeriesId) % part_count
-    partions: Vec<RwLock<HashMap<u32, RwLockRef<SeriesData>>>>,
+    partions: Vec<RwLock<HashMap<SeriesId, RwLockRef<SeriesData>>>>,
 }
 
 impl MemCache {

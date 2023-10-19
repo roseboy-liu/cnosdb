@@ -25,7 +25,7 @@ use crate::tsm2::page::{
     Page, PageMeta, PageStatistics, PageWriteSpec, SeriesMeta, TableMeta,
 };
 use crate::tsm2::{TsmWriteData, BLOOM_FILTER_BITS};
-use crate::Result;
+use crate::{Error, Result};
 
 // #[derive(Debug, Clone)]
 // pub enum Array {
@@ -525,6 +525,12 @@ impl Tsm2Writer {
     pub async fn write_data(&mut self, groups: TsmWriteData) -> Result<()> {
         if self.state == State::Initialised {
             self.write_header().await?;
+        }
+
+        if self.state == State::Finished {
+            return Err(Error::CommonError {
+                reason: "Tsm2Writer has been finished".to_string(),
+            })
         }
         // write page data
         for (table, group) in groups {
