@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use models::predicate::domain::{TimeRange, TimeRanges};
-use models::{FieldId, PhysicalDType as ValueType};
+use models::{FieldId, PhysicalDType as ValueType, SeriesId};
 use parking_lot::RwLock;
 use snafu::{ResultExt, Snafu};
 use utils::BloomFilter;
@@ -320,7 +320,7 @@ pub struct BlockMetaIterator {
     index_ref: Arc<Index>,
     /// Array index in `Index::offsets`
     index_offset: usize,
-    field_id: FieldId,
+    series_id: SeriesId,
     field_type: ValueType,
     /// Array index in `Index::data` which current `BlockMeta` starts.
     block_offset: usize,

@@ -14,7 +14,7 @@ use models::schema::{
 };
 use models::utils::split_id;
 use models::{ColumnId, FieldId, RwLockRef, SchemaId, SeriesId, Timestamp};
-use parking_lot::RwLock;
+use parking_lot::{ReentrantMutex, RwLock};
 use protos::models::{Column, FieldType};
 use trace::error;
 use utils::bitset::ImmutBitSet;
@@ -339,7 +339,7 @@ impl SeriesData {
     pub fn build_data_block(
         &self,
         version: Arc<Version>,
-    ) -> Option<(String, DataBlock2, DataBlock2)> {
+    ) -> Result<Option<(String, DataBlock2, DataBlock2)>> {
         if let Some(schema) = self.get_schema() {
             let mut cols: Vec<ColumnData> = schema
                 .fields()
@@ -354,9 +354,10 @@ impl SeriesData {
             let mut delta_time_array = time_array.clone();
             let mut cols_desc = Vec::with_capacity(schema.field_num());
             for (_schema_id, schema, rows) in self.flat_groups() {
-                let mut values: Vec<&RowData> = rows.iter().collect();
+                let mut values = rows.iter().cloned().collect::<Vec<_>>();
                 values.sort_by_key(|row| row.ts);
-                utils::dedup_front_by_key(&mut values, |row| row.ts);
+                // utils::dedup_front_by_key(&mut values, |row| row.ts);
+                dedup_row_data(&mut values);
                 for row in values {
                     if row.ts < version.max_level_ts {
                         delta_time_array.push(Some(FieldVal::Integer(row.ts)));
@@ -379,18 +380,24 @@ impl SeriesData {
                     }
                 }
             }
-            return Some((
+            if !time_array.valid.is_all_set() || !delta_time_array.valid.is_all_set() {
+                return Err(Error::CommonError {
+                    reason: "Invalid time array in DataBlock".to_string(),
+                })
+            }
+            return Ok(Some((
                 schema.name.clone(),
-                DataBlock2::new(time_array, schema.time_column(), cols, cols_desc.clone()),
+                DataBlock2::new(schema.clone(), time_array, schema.time_column(), cols, cols_desc.clone()),
                 DataBlock2::new(
+                    schema.clone(),
                     delta_time_array,
                     schema.time_column(),
                     delta_cols,
                     cols_desc,
                 ),
-            ));
+            )));
         }
-        None
+        Ok(None)
     }
 }
 
@@ -412,7 +419,7 @@ pub struct MemCache {
 }
 
 impl MemCache {
-    pub fn to_chunk_group(&self, version: Arc<Version>) -> (Vec<TsmWriteData>, Vec<TsmWriteData>) {
+    pub fn to_chunk_group(&self, version: Arc<Version>) -> Result<(Vec<TsmWriteData>, Vec<TsmWriteData>)> {
         let mut chunk_groups = Vec::with_capacity(self.part_count);
         let mut delta_chunk_groups = Vec::new();
         self.partions.iter().for_each(|p| {
@@ -421,31 +428,29 @@ impl MemCache {
             let part = p.read();
             part.iter().for_each(|(series_id, v)| {
                 let data = v.read();
-                if let Some((table_name, datablock, delta_datablock)) =
-                    data.build_data_block(version.clone())
+                if let Some((table, datablock, delta_datablock)) =
+                    data.build_data_block(version.clone())?
                 {
-                    let datablock = datablock.block_to_page();
-                    let delta_datablock = delta_datablock.block_to_page();
-                    if let Some(chunk) = chunk_group.get_mut(&table_name) {
+                    if let Some(chunk) = chunk_group.get_mut(&table) {
                         chunk.insert(*series_id, datablock);
                     } else {
                         let mut chunk = BTreeMap::new();
                         chunk.insert(*series_id, datablock);
-                        chunk_group.insert(table_name.clone(), chunk);
+                        chunk_group.insert(table.clone(), chunk);
                     }
-                    if let Some(chunk) = delta_chunk_group.get_mut(&table_name) {
+                    if let Some(chunk) = delta_chunk_group.get_mut(&table) {
                         chunk.insert(*series_id, delta_datablock);
                     } else {
                         let mut chunk = BTreeMap::new();
                         chunk.insert(*series_id, delta_datablock);
-                        chunk_group.insert(table_name, chunk);
+                        chunk_group.insert(table, chunk);
                     }
                 }
             });
             chunk_groups.push(chunk_group);
             delta_chunk_groups.push(delta_chunk_group)
         });
-        (chunk_groups, delta_chunk_groups)
+        Ok((chunk_groups, delta_chunk_groups))
     }
     pub fn new(
         tf_id: TseriesFamilyId,
@@ -704,6 +709,20 @@ pub(crate) mod test {
 
         fname_vals_map
     }
+}
+
+
+pub fn dedup_row_data(data: &mut Vec<RowData>) {
+    for i in 0..data.len() -1 {
+        if data[i].ts == data[i+1].ts {
+            for (j, field) in data[i+1].fields.iter().enumerate() {
+                if field.is_some() {
+                    data[i].fields[j] = field.clone();
+                }
+            }
+        }
+    }
+    data.dedup_by_key(|row| row.ts);
 }
 
 #[cfg(test)]

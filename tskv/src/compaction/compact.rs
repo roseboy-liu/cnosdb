@@ -4,8 +4,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use models::predicate::domain::TimeRange;
-use models::{FieldId, Timestamp};
+use models::{FieldId, SeriesId, Timestamp};
 use snafu::ResultExt;
+use tokio::sync::RwLock;
 use trace::{error, info, trace};
 use utils::BloomFilter;
 
@@ -20,6 +21,7 @@ use crate::tsm::{
     TsmWriter,
 };
 use crate::{ColumnFileId, Error, LevelId, TseriesFamilyId};
+use crate::tsm2::page::Page;
 use crate::tsm2::reader::TSM2Reader;
 
 /// Temporary compacting data block meta
@@ -84,11 +86,10 @@ impl CompactingBlockMeta {
         self.meta.min_ts() <= time_range.max_ts && self.meta.max_ts() >= time_range.min_ts
     }
 
-    pub async fn get_data_block(&self) -> Result<DataBlock> {
+    pub async fn get_data_block(&self) -> Result<Vec<Page>> {
         self.reader
-            .get_data_block(&self.meta)
+            .read_series_pages(self.meta.series_id())
             .await
-            .context(error::ReadTsmSnafu)
     }
 
     pub async fn get_raw_data(&self, dst: &mut Vec<u8>) -> Result<usize> {
@@ -366,27 +367,30 @@ impl CompactingBlock {
 
 struct CompactingFile {
     i: usize,
-    tsm_reader: Arc<TSM2Reader>,
-    index_iter: BufferedIterator<IndexIterator>,
-    field_id: Option<FieldId>,
+    tsm_reader: Arc<RwLock<TSM2Reader>>,
+    series_idx: usize,
+    series_ids: Vec<SeriesId>,
 }
 
 impl CompactingFile {
-    fn new(i: usize, tsm_reader: Arc<TSM2Reader>) -> Self {
-        let mut index_iter = BufferedIterator::new(tsm_reader.index_iterator());
-        let first_field_id = index_iter.peek().map(|i| i.field_id());
-        Self {
+    async fn new(i: usize, tsm_reader: Arc<RwLock<TSM2Reader>>) -> Result<Self> {
+        let series_ids = {
+            let mut tsm_write = tsm_reader.write().await;
+            let chunks = tsm_write.chunk_group().await?;
+            chunks.iter().flat_map(|(_, chunk)| chunk.chunks.iter().map(|chunk_meta| chunk_meta.series_id)).collect::<Vec<_>>()
+        };
+
+        let tsm = Self {
             i,
             tsm_reader,
-            index_iter,
-            field_id: first_field_id,
-        }
+            series_idx: 0,
+            series_ids,
+        };
+        Ok(tsm)
     }
 
-    fn next(&mut self) -> Option<&IndexMeta> {
-        let idx_meta = self.index_iter.next();
-        idx_meta.map(|i| self.field_id.replace(i.field_id()));
-        idx_meta
+    fn next(&mut self) {
+        self.series_idx += 1;
     }
 
     fn peek(&mut self) -> Option<&IndexMeta> {
@@ -434,7 +438,7 @@ pub(crate) struct CompactIterator {
     finished_readers: Vec<bool>,
     /// How many finished_idxes is set to true.
     finished_reader_cnt: usize,
-    curr_fid: Option<FieldId>,
+    curr_sid: Option<SeriesId>,
 
     merging_blk_meta_groups: VecDeque<CompactingBlockMetaGroup>,
 }
@@ -451,7 +455,7 @@ impl Default for CompactIterator {
             tmp_tsm_blk_tsm_reader_idx: Default::default(),
             finished_readers: Default::default(),
             finished_reader_cnt: Default::default(),
-            curr_fid: Default::default(),
+            curr_sid: Default::default(),
             merging_blk_meta_groups: Default::default(),
         }
     }
@@ -481,17 +485,17 @@ impl CompactIterator {
     }
 
     /// Update tmp_tsm_blks and tmp_tsm_blk_tsm_reader_idx for field id in next iteration.
-    fn next_field_id(&mut self) {
-        self.curr_fid = None;
+    fn next_series_id(&mut self) {
+        self.curr_sid = None;
 
         if let Some(f) = self.compacting_files.peek() {
-            if self.curr_fid.is_none() {
+            if self.curr_sid.is_none() {
                 trace!(
                     "selected new field {:?} from file {} as current field id",
                     f.field_id,
                     f.tsm_reader.file_id()
                 );
-                self.curr_fid = f.field_id
+                self.curr_sid = f.field_id
             }
         } else {
             // TODO finished

@@ -1,12 +1,12 @@
 use std::cmp::{max, min};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::IoSlice;
 use std::path::PathBuf;
 
 use models::codec::Encoding;
 use models::field_value::FieldVal;
 use models::predicate::domain::TimeRange;
-use models::schema::{ColumnType, TableColumn};
+use models::schema::{ColumnType, TableColumn, TskvTableSchemaRef};
 use models::{PhysicalDType, SeriesId, ValueType};
 use snafu::ResultExt;
 use utils::bitset::BitSet;
@@ -297,6 +297,7 @@ pub enum ColumnData {
 
 #[derive(Debug, Clone)]
 pub struct DataBlock2 {
+    schema: TskvTableSchemaRef,
     ts: Column,
     ts_desc: TableColumn,
     cols: Vec<Column>,
@@ -305,18 +306,21 @@ pub struct DataBlock2 {
 
 impl DataBlock2 {
     pub fn new(
+        schema: TskvTableSchemaRef,
         ts: Column,
         ts_desc: TableColumn,
         cols: Vec<Column>,
         cols_desc: Vec<TableColumn>,
     ) -> Self {
         DataBlock2 {
+            schema,
             ts,
             ts_desc,
             cols,
             cols_desc,
         }
     }
+
     //todo dont forgot build time column to pages
     pub fn block_to_page(&self) -> Vec<Page> {
         let mut pages = Vec::with_capacity(self.cols.len() + 1);
@@ -327,6 +331,65 @@ impl DataBlock2 {
             pages.push(col.col_to_page(desc, Some(time_range)));
         }
         pages
+    }
+
+    pub fn merge(&mut self, other: DataBlock2) -> Vec<DataBlock2> {
+        let schema = if self.schema.schema_id > other.schema.schema_id {
+            self.schema.clone()
+        } else {
+            other.schema.clone()
+        };
+        let mut blocks = vec![];
+        enum Merge {
+            SelfTs(usize),
+            OtherTs(usize),
+        }
+        let mut sort_index = Vec::with_capacity(self.len() + other.len());
+        let mut time_array = Vec::new();
+        let (mut index_self, mut index_other) = (0_usize, 0_usize);
+        let (self_len, other_len) = (self.len(), other.len());
+        while index_self < self_len && index_other < other_len {
+            match (self.ts.data, other.ts.data) {
+                (ColumnData::I64(ref data1, ..), ColumnData::I64(ref data2, ..)) => {
+                    if data1[index_self] <= data2[index_other] {
+                        sort_index.push(Merge::SelfTs(index_self));
+                        time_array.push(data1[index_self]);
+                        index_self += 1;
+                    } else {
+                        sort_index.push(Merge::OtherTs(index_other));
+                        time_array.push(data2[index_other]);
+                        index_other += 1;
+                    }
+                }
+                _ => {
+                    unreachable!();
+                }
+            }
+        }
+
+        match (self.ts.data, other.ts.data) {
+            (ColumnData::I64(ref data1, ..), ColumnData::I64(ref data2, ..)) => {
+                while index_self < self_len {
+                    sort_index.push(Merge::SelfTs(index_self));
+                    time_array.push(data1[index_self]);
+                    index_self += 1;
+                }
+                while index_other < other_len {
+                    sort_index.push(Merge::OtherTs(index_other));
+                    time_array.push(data2[index_other]);
+                    index_other += 1;
+                }
+            }
+            _ => {
+                unreachable!()
+            }
+        }
+
+        blocks
+    }
+
+    pub fn len(&self) -> usize {
+        self.ts.valid.len()
     }
 }
 
@@ -372,6 +435,8 @@ pub struct Tsm2Writer {
     // table_bloom_filter: BloomFilter,
     writer: FileCursor,
     options: WriteOptions,
+    table_schemas: HashMap<String, TskvTableSchemaRef>,
+
     /// <table < series, Chunk>>
     page_specs: BTreeMap<String, BTreeMap<SeriesId, Chunk>>,
     /// <table, ChunkGroup>
@@ -399,6 +464,7 @@ impl Tsm2Writer {
             series_bloom_filter: BloomFilter::new(BLOOM_FILTER_BITS),
             writer,
             options: Default::default(),
+            table_schemas: Default::default(),
             page_specs: Default::default(),
             chunk_specs: Default::default(),
             chunk_group_specs: Default::default(),
@@ -462,7 +528,7 @@ impl Tsm2Writer {
             let chunk_group_size = self.writer.write(&buf).await?;
             self.size += chunk_group_size;
             let chunk_group_spec = ChunkGroupWriteSpec {
-                name: table.clone(),
+                table_schema: self.table_schemas.get(table).unwrap().clone(),
                 chunk_group_offset,
                 chunk_group_size,
                 time_range: group.time_range(),
@@ -536,7 +602,8 @@ impl Tsm2Writer {
         for (table, group) in groups {
             for (series, pages) in group {
                 let mut time_range = TimeRange::none();
-                for page in pages {
+                let schema = pages.schema.clone();
+                for page in pages.block_to_page() {
                     let offset = self.writer.pos();
                     let size = self.writer.write(&page.bytes).await?;
                     self.size += size;
@@ -552,6 +619,7 @@ impl Tsm2Writer {
                         .entry(series)
                         .or_default()
                         .push(spec);
+                    self.table_schemas.entry(table.clone()).or_insert(schema.clone());
                 }
             }
         }

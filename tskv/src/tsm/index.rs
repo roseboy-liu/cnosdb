@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::sync::Arc;
 
 use models::predicate::domain::{TimeRange, TimeRanges};
-use models::{FieldId, PhysicalDType as ValueType, Timestamp};
+use models::{FieldId, PhysicalDType as ValueType, SeriesId, Timestamp};
 use utils::BloomFilter;
 
 use crate::byte_utils::{decode_be_i64, decode_be_u16, decode_be_u32, decode_be_u64};
@@ -127,9 +127,8 @@ impl IndexMeta {
 pub struct BlockMeta {
     index_ref: Arc<Index>,
     /// Array index in `Index::data` which current `BlockMeta` starts.
-    field_id: FieldId,
+    series_id: SeriesId,
     block_offset: usize,
-    field_type: ValueType,
 
     min_ts: Timestamp,
     max_ts: Timestamp,
@@ -138,9 +137,8 @@ pub struct BlockMeta {
 
 impl PartialEq for BlockMeta {
     fn eq(&self, other: &Self) -> bool {
-        self.field_id == other.field_id
+        self.series_id == other.series_id
             && self.block_offset == other.block_offset
-            && self.field_type == other.field_type
             && self.min_ts == other.min_ts
             && self.max_ts == other.max_ts
     }
@@ -156,7 +154,7 @@ impl PartialOrd for BlockMeta {
 
 impl Ord for BlockMeta {
     fn cmp(&self, other: &Self) -> cmp::Ordering {
-        match self.field_id.cmp(&other.field_id) {
+        match self.series_id.cmp(&other.series_id) {
             cmp::Ordering::Equal => match self.min_ts.cmp(&other.min_ts) {
                 cmp::Ordering::Equal => self.max_ts.cmp(&other.max_ts),
                 other => other,
@@ -169,8 +167,7 @@ impl Ord for BlockMeta {
 impl BlockMeta {
     fn new(
         index: Arc<Index>,
-        field_id: FieldId,
-        field_type: ValueType,
+        series_id: SeriesId,
         block_offset: usize,
     ) -> Self {
         let min_ts = decode_be_i64(&index.data()[block_offset..block_offset + 8]);
@@ -178,9 +175,8 @@ impl BlockMeta {
         let count = decode_be_u32(&index.data()[block_offset + 16..block_offset + 20]);
         Self {
             index_ref: index,
-            field_id,
+            series_id,
             block_offset,
-            field_type,
             min_ts,
             max_ts,
             count,
@@ -193,13 +189,8 @@ impl BlockMeta {
     }
 
     #[inline(always)]
-    pub fn field_id(&self) -> FieldId {
-        self.field_id
-    }
-
-    #[inline(always)]
-    pub fn field_type(&self) -> ValueType {
-        self.field_type
+    pub fn series_id(&self) -> SeriesId {
+        self.series_id
     }
 
     #[inline(always)]
@@ -274,11 +265,10 @@ pub(crate) fn get_data_block_meta_unchecked(
     index: Arc<Index>,
     index_offset: usize,
     block_idx: usize,
-    field_id: FieldId,
-    field_type: ValueType,
+    series_id: SeriesId,
 ) -> BlockMeta {
     let base = index_offset + INDEX_META_SIZE + block_idx * BLOCK_META_SIZE;
-    BlockMeta::new(index, field_id, field_type, base)
+    BlockMeta::new(index, series_id, base)
 }
 
 #[derive(Debug)]

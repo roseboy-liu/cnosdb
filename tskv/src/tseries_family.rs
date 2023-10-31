@@ -15,6 +15,7 @@ use models::predicate::domain::{TimeRange, TimeRanges};
 use models::schema::{split_owner, TableColumn};
 use models::{FieldId, SchemaId, SeriesId, Timestamp};
 use parking_lot::RwLock;
+use tokio::sync::RwLock as TokioRwLock;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::Sender;
 use tokio::time::Instant;
@@ -254,7 +255,7 @@ impl LevelInfo {
         &mut self,
         compact_meta: &CompactMeta,
         field_filter: Arc<BloomFilter>,
-        tsm_reader_cache: Weak<ShardedCache<String, Arc<TSM2Reader>>>,
+        tsm_reader_cache: Weak<ShardedCache<String, Arc<TokioRwLock<TSM2Reader>>>>,
     ) {
         let file_path = if compact_meta.is_delta {
             let base_dir = self.storage_opt.delta_dir(&self.database, self.tsf_id);

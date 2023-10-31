@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use datafusion::parquet::data_type::AsBytes;
+use tokio::sync::RwLock;
 use models::{ColumnId, SeriesId};
 use utils::BloomFilter;
 
@@ -12,19 +13,37 @@ use crate::error::Result;
 use crate::file_system::file::async_file::AsyncFile;
 use crate::file_system::file::IFile;
 use crate::file_system::file_manager;
-use crate::file_utils;
+use crate::{Error, file_utils};
 use crate::tsm2::page::{Chunk, ChunkGroup, ChunkGroupMeta, Footer, Page, PageWriteSpec};
 use crate::tsm2::{TsmWriteData, FOOTER_SIZE};
+
+struct TsmMeta {
+    footer: Option<Footer>,
+    chunk_group_meta: Option<ChunkGroupMeta>,
+    chunk_group: Option<BTreeMap<String, ChunkGroup>>, // table_name -> chunk_group
+    chunk: Option<BTreeMap<String, BTreeMap<SeriesId, Chunk>>>,
+}
+
+impl Default for TsmMeta {
+    fn default() -> Self {
+        Self {
+            footer: None,
+            chunk_group_meta: None,
+            chunk_group: None,
+            chunk: None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct TSM2Reader {
     file_id: u64,
     reader: Arc<AsyncFile>,
 
-    footer: Option<Footer>,
-    chunk_group_meta: Option<ChunkGroupMeta>,
-    chunk_group: Option<BTreeMap<String, ChunkGroup>>, // table_name -> chunk_group
-    chunk: Option<BTreeMap<String, BTreeMap<SeriesId, Chunk>>>,
+    footer: Footer,
+    chunk_group_meta: ChunkGroupMeta,
+    chunk_group: BTreeMap<String, ChunkGroup>, // table_name -> chunk_group
+    chunk: BTreeMap<String, BTreeMap<SeriesId, Chunk>>,
 }
 
 impl TSM2Reader {
@@ -32,60 +51,36 @@ impl TSM2Reader {
         let path = tsm_path.as_ref().to_path_buf();
         let file_id = file_utils::get_tsm_file_id_by_path(&path)?;
         let reader = Arc::new(file_manager::open_file(tsm_path).await?);
+        let footer = read_footer(reader.clone()).await?;
+        let chunk_group_meta = read_chunk_group_meta(reader.clone(), &footer).await?;
+        let chunk_group = read_chunk_groups(reader.clone(), &chunk_group_meta).await?;
+        let chunk = read_chunk(reader.clone(), &chunk_group).await?;
         Ok(Self {
             file_id,
             reader,
-            footer: None,
-            chunk_group_meta: None,
-            chunk_group: None,
-            chunk: None,
+            footer,
+            chunk_group_meta,
+            chunk_group,
+            chunk,
         })
     }
 
-    pub async fn footer(&mut self) -> Result<&Footer> {
-        match self.footer {
-            Some(ref footer) => Ok(footer),
-            None => {
-                self.footer = Some(read_footer(self.reader.clone()).await?);
-                Ok(self.footer.as_ref().unwrap())
-            }
-        }
+
+    pub fn footer(&self) -> &Footer {
+        &self.footer
     }
 
-    pub async fn chunk_group_meta(&mut self) -> Result<&ChunkGroupMeta> {
-        match self.chunk_group_meta {
-            Some(ref chunk_group_meta) => Ok(chunk_group_meta),
-            None => {
-                self.chunk_group_meta = Some(
-                    read_chunk_group_meta(self.reader.clone(), self.footer().await?).await?
-                );
-                Ok(self.chunk_group_meta.as_ref().unwrap())
-            }
-        }
+
+    pub fn chunk_group_meta(&self) -> &ChunkGroupMeta {
+        &self.chunk_group_meta
     }
 
-    pub async fn chunk_group(&mut self) -> Result<&BTreeMap<String, ChunkGroup>> {
-        match self.chunk_group {
-            Some(ref chunk_group) => Ok(chunk_group),
-            None => {
-                self.chunk_group = Some(
-                    read_chunk_groups(self.reader.clone(), self.chunk_group_meta().await?).await?,
-                );
-                Ok(self.chunk_group.as_ref().unwrap())
-            }
-        }
+    pub fn chunk_group(&self) -> &BTreeMap<String, ChunkGroup> {
+        &self.chunk_group
     }
 
-    pub async fn chunk(&mut self) -> Result<&BTreeMap<String, BTreeMap<SeriesId, Chunk>>> {
-        match self.chunk {
-            Some(ref chunk) => Ok(chunk),
-            None => {
-                self.chunk = Some(
-                    read_chunk(self.reader.clone(), self.chunk_group().await?).await?,
-                );
-                Ok(self.chunk.as_ref().unwrap())
-            }
-        }
+    pub fn chunk(&self) -> &BTreeMap<String, BTreeMap<SeriesId, Chunk>> {
+        &self.chunk
     }
 
 
@@ -95,14 +90,14 @@ impl TSM2Reader {
         column_id: &[ColumnId],
     ) -> Result<Vec<Page>> {
         let mut res = Vec::new();
-        let footer = self.footer().await?;
+        let footer = self.footer();
         let bloom_filter = BloomFilter::with_data(footer.series().bloom_filter());
         let reader = self.reader.clone();
         for sid in series_ids {
             if !bloom_filter.contains(&sid.as_bytes()) {
                 continue
             }
-            let chunk = self.chunk().await?.iter().filter_map(|(_, chunk)| chunk.get(sid)).collect::<Vec<_>>();
+            let chunk = self.chunk().iter().filter_map(|(_, chunk)| chunk.get(sid)).collect::<Vec<_>>();
             for c in chunk {
                 for pages in c.pages() {
                     if column_id.contains(&pages.meta.column.id) {
@@ -115,13 +110,27 @@ impl TSM2Reader {
         Ok(res)
     }
 
-    pub async fn read(&mut self) -> Result<TsmWriteData> {
-        let footer = read_footer(self.reader.clone()).await?;
-        let chunk_group_meta = read_chunk_group_meta(self.reader.clone(), &footer).await?;
-        let chunk_group = read_chunk_groups(self.reader.clone(), &chunk_group_meta).await?;
-        let chunk = read_chunk(self.reader.clone(), &chunk_group).await?;
+    pub async fn read_all_pages(&self) -> Result<TsmWriteData> {
+        let chunk = self.chunk();
         let pages = read_pages(self.reader.clone(), chunk).await?;
         Ok(pages)
+    }
+
+    pub async fn read_series_pages(&self, series_id: SeriesId) -> Result<Vec<Page>> {
+        let chunk = self.chunk();
+        let meta = self.chunk_group_meta();
+        let mut res = Vec::new();
+        let reader = self.reader.clone();
+        for (_, chunk) in chunk {
+            if let Some(chunk) = chunk.get(&series_id) {
+                for page in chunk.pages() {
+                    let page = read_page(reader.clone(), page).await?;
+                    res.push(page);
+                }
+                break;
+            }
+        }
+        Ok(res)
     }
 }
 
@@ -160,7 +169,7 @@ pub async fn read_chunk_groups(
     chunk_group_meta: &ChunkGroupMeta,
 ) -> Result<BTreeMap<String, ChunkGroup>> {
     let mut specs = BTreeMap::new();
-    for chunk in chunk_group_meta.tables() {
+    for (_, chunk) in chunk_group_meta.tables() {
         let pos = chunk.chunk_group_offset();
         let mut buffer = vec![0u8; chunk.chunk_group_size()];
         reader.read_at(pos, &mut buffer).await?; // read chunk group meta
@@ -191,7 +200,7 @@ pub async fn read_chunk(
 
 pub async fn read_pages(
     reader: Arc<AsyncFile>,
-    chunk: BTreeMap<String, BTreeMap<SeriesId, Chunk>>,
+    chunk: &BTreeMap<String, BTreeMap<SeriesId, Chunk>>,
 ) -> Result<TsmWriteData> {
     let mut pages = TsmWriteData::new();
     for (table_name, table_chunks) in chunk {
@@ -210,7 +219,7 @@ pub async fn read_pages(
             }
             table_pages.insert(series_id, chunk_pages);
         }
-        pages.insert(table_name, table_pages);
+        pages.insert(table_name.clone(), table_pages);
     }
     Ok(pages)
 }

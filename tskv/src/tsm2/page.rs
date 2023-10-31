@@ -1,14 +1,32 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
 use models::predicate::domain::TimeRange;
-use models::schema::TableColumn;
+use models::schema::{TableColumn, TskvTableSchema, TskvTableSchemaRef};
 use models::{PhysicalDType, SeriesId};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Result;
 use crate::Error;
+use crate::tsm2::writer::ColumnData;
 
 pub struct Page {
     pub(crate) bytes: bytes::Bytes,
     pub(crate) meta: PageMeta,
+}
+
+impl Page {
+    pub fn new(bytes: bytes::Bytes, meta: PageMeta) -> Self {
+        Self { bytes, meta }
+    }
+
+    pub fn bytes(&self) -> &bytes::Bytes {
+        &self.bytes
+    }
+
+    pub fn meta(&self) -> &PageMeta {
+        &self.meta
+    }
+
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -179,8 +197,7 @@ pub type TableId = u64;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkGroupWriteSpec {
     // pub(crate) id: TableId,
-    pub(crate) name: String,
-    // pub(crate) table: TableSchema,
+    pub(crate) table_schema: Arc<TskvTableSchema>,
     pub(crate) chunk_group_offset: u64,
     pub(crate) chunk_group_size: usize,
     pub(crate) time_range: TimeRange,
@@ -189,14 +206,14 @@ pub struct ChunkGroupWriteSpec {
 
 impl ChunkGroupWriteSpec {
     pub fn new(
-        name: String,
+        table_schema: TskvTableSchemaRef,
         chunk_group_offset: u64,
         chunk_group_size: usize,
         time_range: TimeRange,
         count: usize,
     ) -> Self {
         Self {
-            name,
+            table_schema,
             chunk_group_offset,
             chunk_group_size,
             time_range,
@@ -205,7 +222,7 @@ impl ChunkGroupWriteSpec {
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        &self.table_schema.name
     }
 
     pub fn chunk_group_offset(&self) -> u64 {
@@ -227,7 +244,7 @@ impl ChunkGroupWriteSpec {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChunkGroupMeta {
-    pub(crate) tables: Vec<ChunkGroupWriteSpec>,
+    tables: BTreeMap<String, ChunkGroupWriteSpec>,
 }
 
 impl Default for ChunkGroupMeta {
@@ -238,7 +255,7 @@ impl Default for ChunkGroupMeta {
 
 impl ChunkGroupMeta {
     pub fn new() -> Self {
-        Self { tables: Vec::new() }
+        Self { tables: BTreeMap::new() }
     }
     pub fn serialize(&self) -> Result<Vec<u8>> {
         bincode::serialize(&self).map_err(|e| Error::Serialize { source: e.into() })
@@ -249,21 +266,25 @@ impl ChunkGroupMeta {
     }
 
     pub fn push(&mut self, table: ChunkGroupWriteSpec) {
-        self.tables.push(table);
+        self.tables.insert(table.table_schema.name.clone(), table);
     }
     pub fn len(&self) -> usize {
         self.tables.len()
     }
     pub fn time_range(&self) -> TimeRange {
         let mut time_range = TimeRange::none();
-        for table in self.tables.iter() {
+        for (_, table) in self.tables.iter() {
             time_range.merge(&table.time_range);
         }
         time_range
     }
 
-    pub fn tables(&self) -> &[ChunkGroupWriteSpec] {
+    pub fn tables(&self) -> &BTreeMap<String, ChunkGroupWriteSpec> {
         &self.tables
+    }
+
+    pub fn table_schema(&self, table_name: &str) -> Option<Arc<TskvTableSchema>> {
+        self.tables.get(table_name).map(|t| t.table_schema.clone())
     }
 }
 
