@@ -10,7 +10,6 @@ use tokio::sync::RwLock;
 use trace::{error, info, trace};
 use utils::BloomFilter;
 
-use super::iterator::BufferedIterator;
 use crate::compaction::CompactReq;
 use crate::context::GlobalContext;
 use crate::error::{self, Result};
@@ -20,9 +19,9 @@ use crate::tsm::{
     self, BlockMeta, BlockMetaIterator, DataBlock, EncodedDataBlock, IndexIterator, IndexMeta,
     TsmWriter,
 };
-use crate::{ColumnFileId, Error, LevelId, TseriesFamilyId};
 use crate::tsm2::page::Page;
 use crate::tsm2::reader::TSM2Reader;
+use crate::{ColumnFileId, Error, LevelId, TseriesFamilyId};
 
 /// Temporary compacting data block meta
 #[derive(Clone)]
@@ -87,9 +86,7 @@ impl CompactingBlockMeta {
     }
 
     pub async fn get_data_block(&self) -> Result<Vec<Page>> {
-        self.reader
-            .read_series_pages(self.meta.series_id())
-            .await
+        self.reader.read_series_pages(self.meta.series_id()).await
     }
 
     pub async fn get_raw_data(&self, dst: &mut Vec<u8>) -> Result<usize> {
@@ -377,7 +374,10 @@ impl CompactingFile {
         let series_ids = {
             let mut tsm_write = tsm_reader.write().await;
             let chunks = tsm_write.chunk_group().await?;
-            chunks.iter().flat_map(|(_, chunk)| chunk.chunks.iter().map(|chunk_meta| chunk_meta.series_id)).collect::<Vec<_>>()
+            chunks
+                .iter()
+                .flat_map(|(_, chunk)| chunk.chunks.iter().map(|chunk_meta| chunk_meta.series_id))
+                .collect::<Vec<_>>()
         };
 
         let tsm = Self {

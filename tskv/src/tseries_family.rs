@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem::MaybeUninit;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use arrow_array::RecordBatch;
 use lru_cache::asynchronous::ShardedCache;
 use memory_pool::MemoryPoolRef;
 use metrics::gauge::U64Gauge;
@@ -15,9 +16,9 @@ use models::predicate::domain::{TimeRange, TimeRanges};
 use models::schema::{split_owner, TableColumn};
 use models::{FieldId, SchemaId, SeriesId, Timestamp};
 use parking_lot::RwLock;
-use tokio::sync::RwLock as TokioRwLock;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::Sender;
+use tokio::sync::RwLock as TokioRwLock;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 use trace::{debug, error, info, warn};
@@ -27,12 +28,13 @@ use crate::compaction::{CompactTask, FlushReq};
 use crate::error::Result;
 use crate::file_utils::{make_delta_file_name, make_tsm_file_name};
 use crate::kv_option::{CacheOptions, StorageOptions};
-use crate::memcache::{MemCache, RowGroup};
+use crate::memcache::{MemCache, MemCacheStatistics, RowGroup};
 use crate::summary::{CompactMeta, VersionEdit};
 use crate::tsm::{DataBlock, TsmReader, TsmTombstone};
+use crate::tsm2::page::PageMeta;
+use crate::tsm2::reader::TSM2Reader;
 use crate::Error::CommonError;
 use crate::{ColumnFileId, LevelId, TseriesFamilyId};
-use crate::tsm2::reader::TSM2Reader;
 
 #[derive(Debug)]
 pub struct ColumnFile {
@@ -530,6 +532,14 @@ impl Version {
         Ok(tsm_reader)
     }
 
+    /// todo:
+    pub fn get_tsm_reader2(
+        &self,
+        _path: impl AsRef<Path>,
+    ) -> Result<Arc<tokio::sync::RwLock<TSM2Reader>>> {
+        todo!("get_tsm_reader2")
+    }
+
     // return: l0 , l1-l4 files
     pub fn get_level_files(
         &self,
@@ -547,6 +557,27 @@ impl Version {
             }
         }
         unsafe { MaybeUninit::array_assume_init(res) }
+    }
+
+    pub async fn statistics(
+        &self,
+        series_ids: &[SeriesId],
+        time_predicate: TimeRange,
+    ) -> BTreeMap<u64, BTreeMap<SeriesId, Vec<PageMeta>>> {
+        let mut result = BTreeMap::new();
+        for level in self.levels_info.iter() {
+            for file in level.files.iter() {
+                if file.is_deleted() || !file.overlap(&time_predicate) {
+                    continue;
+                }
+                let reader = self.get_tsm_reader2(file.file_path()).unwrap();
+                let mut reader = reader.write().await;
+                let fid = reader.fid();
+                let sts = reader.statistics(series_ids, time_predicate).await.unwrap();
+                result.insert(fid, sts);
+            }
+        }
+        result
     }
 }
 
@@ -596,6 +627,30 @@ impl CacheGroup {
             .read()
             .read_series_timestamps(series_ids, time_predicate, &mut handle_data);
     }
+    /// todo：原来的实现里面 memcache中的数据被copy了出来，在cache中命中的数据较多且查询的并发量大的时候，会引发oom的问题。
+    /// 内存结构变成一种按照时间排序的结构，查询的时候就返回引用，支持 stream 迭代。
+    pub fn stream_read(
+        _series_ids: &[SeriesId],
+        _project: &[usize],
+        _time_predicate: impl FnMut(Timestamp) -> bool,
+    ) -> Option<RecordBatch> {
+        None
+    }
+
+    pub fn cache_statistics(
+        &self,
+        series_ids: &[SeriesId],
+        time_predicate: TimeRange,
+    ) -> BTreeMap<u64, MemCacheStatistics> {
+        let mut result = BTreeMap::new();
+        let sts = self.mut_cache.read().statistics(series_ids, time_predicate);
+        result.insert(sts.seq_no(), sts);
+        self.immut_cache.iter().for_each(|m| {
+            let sts = m.read().statistics(series_ids, time_predicate);
+            result.insert(sts.seq_no(), sts);
+        });
+        result
+    }
 }
 
 #[derive(Debug)]
@@ -638,6 +693,23 @@ impl SuperVersion {
             }
         }
         files
+    }
+
+    pub fn cache_group(&self) -> &CacheGroup {
+        &self.caches
+    }
+
+    pub async fn statistics(
+        &self,
+        series_ids: &[SeriesId],
+        time_predicate: TimeRange,
+    ) -> (
+        BTreeMap<u64, MemCacheStatistics>,
+        BTreeMap<u64, BTreeMap<SeriesId, Vec<PageMeta>>>,
+    ) {
+        let cache = self.caches.cache_statistics(series_ids, time_predicate);
+        let sts = self.version.statistics(series_ids, time_predicate).await;
+        (cache, sts)
     }
 }
 

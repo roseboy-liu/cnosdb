@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use models::schema::TskvTableSchema;
 
+use models::schema::TskvTableSchema;
 use models::SeriesId;
 
 use crate::tsm2::page::Page;
@@ -11,7 +11,6 @@ pub(crate) mod page;
 pub mod reader;
 mod scan_config;
 mod statistics;
-mod tsm_exec;
 mod types;
 pub mod writer;
 
@@ -21,7 +20,8 @@ const HEADER_SIZE: usize = 5;
 const INDEX_META_SIZE: usize = 11;
 const BLOCK_META_SIZE: usize = 44;
 const BLOOM_FILTER_SIZE: usize = 64;
-const BLOOM_FILTER_BITS: u64 = 512; // 64 * 8
+const BLOOM_FILTER_BITS: u64 = 512;
+// 64 * 8
 const FOOTER_SIZE: usize = 121;
 
 pub type TsmWriteData = BTreeMap<String, BTreeMap<SeriesId, DataBlock2>>; // (table, (series_id, pages))

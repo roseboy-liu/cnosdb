@@ -17,9 +17,9 @@ use tokio::sync::RwLock;
 use crate::compaction::CompactIterator;
 use crate::error::{Error, Result};
 use crate::tseries_family::TseriesFamily;
-use crate::tsm::{DataBlock};
-use crate::TseriesFamilyId;
+use crate::tsm::DataBlock;
 use crate::tsm2::reader::TSM2Reader;
+use crate::TseriesFamilyId;
 
 const DEFAULT_DURATION: i64 = 24 * 60 * 60 * 1_000_000_000;
 

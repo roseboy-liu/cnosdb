@@ -25,6 +25,8 @@ use crate::tsm2::writer::{Column as ColumnData, DataBlock2};
 use crate::tsm2::TsmWriteData;
 use crate::{Error, TseriesFamilyId};
 
+// use skiplist::ordered_skiplist::OrderedSkipList;
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct RowData {
     pub ts: i64,
@@ -187,11 +189,12 @@ impl RowData {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub struct RowGroup {
     pub schema: Arc<TskvTableSchema>,
     pub range: TimeRange,
     pub rows: LinkedList<RowData>,
+    // pub rows: OrderedSkipList<RowData>,
     /// total size in stack and heap
     pub size: usize,
 }
@@ -383,11 +386,17 @@ impl SeriesData {
             if !time_array.valid.is_all_set() || !delta_time_array.valid.is_all_set() {
                 return Err(Error::CommonError {
                     reason: "Invalid time array in DataBlock".to_string(),
-                })
+                });
             }
             return Ok(Some((
                 schema.name.clone(),
-                DataBlock2::new(schema.clone(), time_array, schema.time_column(), cols, cols_desc.clone()),
+                DataBlock2::new(
+                    schema.clone(),
+                    time_array,
+                    schema.time_column(),
+                    cols,
+                    cols_desc.clone(),
+                ),
                 DataBlock2::new(
                     schema.clone(),
                     delta_time_array,
@@ -398,6 +407,19 @@ impl SeriesData {
             )));
         }
         Ok(None)
+    }
+}
+
+pub struct MemCacheStatistics {
+    tf_id: TseriesFamilyId,
+    /// greater seq mean the last write
+    seq_no: u64,
+    statistics: HashMap<SeriesId, TimeRange>,
+}
+
+impl MemCacheStatistics {
+    pub fn seq_no(&self) -> u64 {
+        self.seq_no
     }
 }
 
@@ -419,7 +441,10 @@ pub struct MemCache {
 }
 
 impl MemCache {
-    pub fn to_chunk_group(&self, version: Arc<Version>) -> Result<(Vec<TsmWriteData>, Vec<TsmWriteData>)> {
+    pub fn to_chunk_group(
+        &self,
+        version: Arc<Version>,
+    ) -> Result<(Vec<TsmWriteData>, Vec<TsmWriteData>)> {
         let mut chunk_groups = Vec::with_capacity(self.part_count);
         let mut delta_chunk_groups = Vec::new();
         self.partions.iter().for_each(|p| {
@@ -532,6 +557,31 @@ impl MemCache {
                     .read()
                     .read_timestamps(&mut time_predicate, &mut handle_data);
             }
+        }
+    }
+
+    pub fn statistics(
+        &self,
+        series_ids: &[SeriesId],
+        time_predicate: TimeRange,
+    ) -> MemCacheStatistics {
+        let mut statistics = HashMap::new();
+        for sid in series_ids {
+            let index = (*sid as usize) % self.part_count;
+            let range = match self.partions[index].read().get(sid) {
+                None => continue,
+                Some(series_data) => series_data.read().range,
+            };
+            let time_predicate = match time_predicate.intersect(&range) {
+                None => continue,
+                Some(time_predicate) => time_predicate,
+            };
+            statistics.insert(*sid, time_predicate);
+        }
+        MemCacheStatistics {
+            tf_id: self.tf_id,
+            seq_no: self.min_seq_no,
+            statistics,
         }
     }
 
@@ -711,11 +761,10 @@ pub(crate) mod test {
     }
 }
 
-
 pub fn dedup_row_data(data: &mut Vec<RowData>) {
-    for i in 0..data.len() -1 {
-        if data[i].ts == data[i+1].ts {
-            for (j, field) in data[i+1].fields.iter().enumerate() {
+    for i in 0..data.len() - 1 {
+        if data[i].ts == data[i + 1].ts {
+            for (j, field) in data[i + 1].fields.iter().enumerate() {
                 if field.is_some() {
                     data[i].fields[j] = field.clone();
                 }

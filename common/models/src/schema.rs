@@ -159,7 +159,7 @@ pub struct TskvTableSchema {
     columns_index: HashMap<String, usize>,
 }
 
-impl PartialOrd for  TskvTableSchema {
+impl PartialOrd for TskvTableSchema {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.schema_id.cmp(&other.schema_id))
     }

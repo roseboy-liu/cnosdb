@@ -165,11 +165,7 @@ impl Ord for BlockMeta {
 }
 
 impl BlockMeta {
-    fn new(
-        index: Arc<Index>,
-        series_id: SeriesId,
-        block_offset: usize,
-    ) -> Self {
+    fn new(index: Arc<Index>, series_id: SeriesId, block_offset: usize) -> Self {
         let min_ts = decode_be_i64(&index.data()[block_offset..block_offset + 8]);
         let max_ts = decode_be_i64(&index.data()[block_offset + 8..block_offset + 16]);
         let count = decode_be_u32(&index.data()[block_offset + 16..block_offset + 20]);

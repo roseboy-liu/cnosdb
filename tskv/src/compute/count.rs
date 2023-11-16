@@ -8,8 +8,8 @@ use trace::trace;
 
 use crate::tseries_family::{ColumnFile, SuperVersion};
 use crate::tsm::{self, BlockMeta};
-use crate::{Error, Result};
 use crate::tsm2::reader::TSM2Reader;
+use crate::{Error, Result};
 
 #[derive(PartialEq, Eq)]
 pub enum TimeRangeCmp {

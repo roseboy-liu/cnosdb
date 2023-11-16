@@ -1,13 +1,16 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
+
+use datafusion::parquet::data_type::AsBytes;
 use models::predicate::domain::TimeRange;
 use models::schema::{TableColumn, TskvTableSchema, TskvTableSchemaRef};
 use models::{PhysicalDType, SeriesId};
 use serde::{Deserialize, Serialize};
+use utils::BloomFilter;
 
 use crate::error::Result;
-use crate::Error;
 use crate::tsm2::writer::ColumnData;
+use crate::Error;
 
 pub struct Page {
     pub(crate) bytes: bytes::Bytes,
@@ -26,7 +29,6 @@ impl Page {
     pub fn meta(&self) -> &PageMeta {
         &self.meta
     }
-
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -66,8 +68,9 @@ impl PageWriteSpec {
         self.size
     }
 
-    pub fn meta(&self) -> &PageMeta {
-        &self.meta
+    /// todo: dont copy meta
+    pub fn meta(&self) -> PageMeta {
+        self.meta.clone()
     }
 }
 
@@ -255,7 +258,9 @@ impl Default for ChunkGroupMeta {
 
 impl ChunkGroupMeta {
     pub fn new() -> Self {
-        Self { tables: BTreeMap::new() }
+        Self {
+            tables: BTreeMap::new(),
+        }
     }
     pub fn serialize(&self) -> Result<Vec<u8>> {
         bincode::serialize(&self).map_err(|e| Error::Serialize { source: e.into() })
@@ -294,7 +299,6 @@ impl ChunkGroupMeta {
 pub struct Footer {
     pub(crate) version: u8,
     pub(crate) time_range: TimeRange,
-    //8 + 8
     pub(crate) table: TableMeta,
     pub(crate) series: SeriesMeta,
 }
@@ -332,14 +336,19 @@ impl Footer {
     pub fn deserialize(bytes: &[u8]) -> Result<Self> {
         bincode::deserialize(bytes).map_err(|e| Error::Deserialize { source: e.into() })
     }
+
+    pub fn is_series_exist(&self, series_id: &SeriesId) -> bool {
+        self.series
+            .bloom_filter
+            .contains((*series_id).as_bytes().as_ref())
+    }
 }
 
 ///  7 + 8 + 8 = 23
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct TableMeta {
     // todo: bloomfilter, store table object id
-    // bloom_filter: Vec<u8>,
-    // 7 Byte
+    // bloom_filter: BloomFilter,
     chunk_group_offset: u64,
     chunk_group_size: usize,
 }
@@ -364,7 +373,7 @@ impl TableMeta {
 /// 16 + 8 + 8 = 32
 #[derive(Clone, Debug, Default, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SeriesMeta {
-    bloom_filter: Vec<u8>,
+    bloom_filter: BloomFilter,
     // 16 Byte
     chunk_offset: u64,
     chunk_size: u64,
@@ -372,6 +381,7 @@ pub struct SeriesMeta {
 
 impl SeriesMeta {
     pub fn new(bloom_filter: Vec<u8>, chunk_offset: u64, chunk_size: u64) -> Self {
+        let bloom_filter = BloomFilter::with_data(&bloom_filter);
         Self {
             bloom_filter,
             chunk_offset,
@@ -387,7 +397,7 @@ impl SeriesMeta {
         bincode::deserialize(bytes).map_err(|e| Error::Deserialize { source: e.into() })
     }
 
-    pub fn bloom_filter(&self) -> &Vec<u8> {
+    pub fn bloom_filter(&self) -> &BloomFilter {
         &self.bloom_filter
     }
 

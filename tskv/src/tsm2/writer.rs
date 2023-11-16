@@ -596,7 +596,7 @@ impl Tsm2Writer {
         if self.state == State::Finished {
             return Err(Error::CommonError {
                 reason: "Tsm2Writer has been finished".to_string(),
-            })
+            });
         }
         // write page data
         for (table, group) in groups {
@@ -619,7 +619,9 @@ impl Tsm2Writer {
                         .entry(series)
                         .or_default()
                         .push(spec);
-                    self.table_schemas.entry(table.clone()).or_insert(schema.clone());
+                    self.table_schemas
+                        .entry(table.clone())
+                        .or_insert(schema.clone());
                 }
             }
         }

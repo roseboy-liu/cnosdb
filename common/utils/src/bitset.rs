@@ -10,9 +10,11 @@ impl BitSet {
     }
 
     pub fn to_vec(&self) -> Vec<bool> {
-        let boolset = self.buffer.iter().flat_map(|&byte| {
-            (0..8).map(move |i| (byte >> i) & 1 != 0)
-        }).collect::<Vec<_>>();
+        let boolset = self
+            .buffer
+            .iter()
+            .flat_map(|&byte| (0..8).map(move |i| (byte >> i) & 1 != 0))
+            .collect::<Vec<_>>();
         boolset
     }
 

@@ -34,8 +34,8 @@ use crate::error::Result;
 use crate::reader::Cursor;
 use crate::tseries_family::{ColumnFile, SuperVersion, Version};
 use crate::tsm::{BlockMetaIterator, DataBlockReader};
-use crate::{EngineRef, Error};
 use crate::tsm2::reader::TSM2Reader;
+use crate::{EngineRef, Error};
 
 pub type CursorPtr = Box<dyn Cursor>;
 
