@@ -1,7 +1,8 @@
 use std::cmp;
 use std::convert::TryInto;
 use std::error::Error;
-
+use datafusion::arrow::buffer::NullBuffer;
+use arrow::buffer::NullBuffer;
 use integer_encoding::VarInt;
 
 use crate::tsm::codec::Encoding;
@@ -84,6 +85,7 @@ pub fn bool_without_compress_encode(
 pub fn bool_bitpack_decode(
     src: &[u8],
     dst: &mut Vec<bool>,
+    bit_set: &NullBuffer,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() {
         return Ok(());
@@ -107,17 +109,19 @@ pub fn bool_bitpack_decode(
     // does
     count = cmp::min(min, count);
 
-    if dst.capacity() < count {
-        dst.reserve_exact(count - dst.capacity());
-    }
+    let mut iter = src.iter();
+    for is_null in bit_set.iter() {
+        if *is_null {
+            dst.push(false);
+            continue;
+        }
 
-    let mut j = 0;
-    for &v in src {
-        let mut i = 128;
-        while i > 0 && j < count {
-            dst.push(v & i != 0);
-            i >>= 1;
-            j += 1;
+        if let Some(val) = iter.next() {
+            let mut i = 128;
+            for _ in 0..8 {
+                dst.push(val & i != 0);
+                i >>= 1;
+            }
         }
     }
     Ok(())
@@ -126,21 +130,28 @@ pub fn bool_bitpack_decode(
 pub fn bool_without_compress_decode(
     src: &[u8],
     dst: &mut Vec<bool>,
+    bit_set: &NullBuffer,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() {
         return Ok(());
     }
 
     let src = &src[1..];
-
-    for i in src {
-        if *i == 1 {
-            dst.push(true);
-        } else {
+    let mut iter = src.iter();
+    for is_null in bit_set.iter() {
+        if *is_null {
             dst.push(false);
+            continue;
+        }
+
+        if let Some(v) = iter.next() {
+            if *v == 1 {
+                dst.push(true);
+            } else {
+                dst.push(false);
+            }
         }
     }
-
     Ok(())
 }
 

@@ -3,9 +3,12 @@ use std::fmt::{Debug, Formatter};
 use std::path::Path;
 use std::sync::Arc;
 
+use arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
 use arrow_array::{ArrayRef, RecordBatch};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
+use datafusion::arrow::array::ArrayRef;
+use datafusion::arrow::buffer::{BooleanBuffer, Buffer, NullBuffer};
 use models::column_data::PrimaryColumnData;
 use models::predicate::domain::TimeRange;
 use models::schema::tskv_table_schema::TskvTableSchemaRef;
@@ -542,11 +545,11 @@ fn update_nullbits_by_tombstone(
 }
 
 pub fn data_buf_to_arrow_array(page: &Page, null_bitset: NullBitset) -> TskvResult<ArrayRef> {
-    let column = MutableColumn::data_buf_to_column(
-        page.data_buffer(),
-        page.meta(),
-        &NullBitset::Ref(page.null_bitset()),
-    )?;
+    let num_values = page.meta().num_values;
+    let buffer = Buffer::from_vec(null_bitset.null_bitset_slice());
+    let null_buffer = NullBuffer::new(BooleanBuffer::new(buffer, 0, num_values as usize));
+
+    let column = MutableColumn::data_buf_to_column(page.data_buffer(), page.meta(), &null_buffer)?;
     let array = column
         .to_arrow_array(Some(null_bitset))
         .context(ModelSnafu)?;

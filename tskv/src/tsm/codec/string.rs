@@ -1,9 +1,14 @@
 use std::convert::TryInto;
 use std::error::Error;
 use std::io::Write;
-
+use std::sync::Arc;
+use arrow::buffer::NullBuffer;
+use arrow_array::{ArrayRef, StringArray};
+use arrow_array::builder::StringBuilder;
 use bzip2::write::{BzDecoder, BzEncoder};
 use bzip2::Compression as CompressionBzip;
+use datafusion::arrow::array::{ArrayRef, StringBuilder};
+use datafusion::arrow::buffer::NullBuffer;
 use flate2::write::{GzDecoder, GzEncoder, ZlibDecoder, ZlibEncoder};
 use flate2::Compression as CompressionFlate;
 use integer_encoding::VarInt;
@@ -178,6 +183,7 @@ pub fn str_zlib_encode(
 pub fn str_without_compress_encode(
     src: &[&[u8]],
     dst: &mut Vec<u8>,
+    bit_set: &NullBuffer,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() {
         return Ok(());
@@ -200,10 +206,11 @@ pub fn str_without_compress_encode(
 pub fn str_snappy_decode(
     src: &[u8],
     dst: &mut Vec<MiniVec<u8>>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    if src.is_empty() {
-        return Ok(());
-    }
+    bit_set: &NullBuffer,
+) -> Result<ArrayRef, Box<dyn Error + Send + Sync>> {
+    // if src.is_empty() {
+    //     return Ok(());
+    // }
     let src = &src[1..];
 
     let mut decoder = snap::raw::Decoder::new();
@@ -211,62 +218,77 @@ pub fn str_snappy_decode(
     // currently so ignore for now.
     let decoded_bytes = decoder.decompress_vec(&src[HEADER_LEN..])?;
 
-    if dst.capacity() == 0 {
-        dst.reserve_exact(64);
-    }
 
+    let mut builder = StringBuilder::new();
     let num_decoded_bytes = decoded_bytes.len();
     let mut i = 0;
-
-    while i < num_decoded_bytes {
-        let (length, num_bytes_read) =
-            u64::decode_var(&decoded_bytes[i..]).ok_or("invalid encoded string length")?;
-        let length: usize = length.try_into()?;
-
-        let lower = i + num_bytes_read;
-        let upper = lower + length;
-
-        if upper < lower {
-            return Err("length overflow".into());
+    for is_null in bit_set.iter() {
+        if is_null {
+            builder.append_null();
+            continue;
         }
-        if upper > num_decoded_bytes {
-            return Err("short buffer".into());
+        if i < num_decoded_bytes {
+            let (length, num_bytes_read) =
+                u64::decode_var(&decoded_bytes[i..]).ok_or("invalid encoded string length")?;
+            let length: usize = length.try_into()?;
+
+            let lower = i + num_bytes_read;
+            let upper = lower + length;
+
+            if upper < lower {
+                return Err("length overflow".into());
+            }
+            if upper > num_decoded_bytes {
+                return Err("short buffer".into());
+            }
+
+            dst.push(MiniVec::from(&decoded_bytes[lower..upper]));
+
+            // The length of this string plus the length of the variable byte encoded length
+            i += length + num_bytes_read;
         }
-
-        dst.push(MiniVec::from(&decoded_bytes[lower..upper]));
-
-        // The length of this string plus the length of the variable byte encoded length
-        i += length + num_bytes_read;
     }
-
-    Ok(())
+    Ok(Arc::new(builder.finish()))
 }
 
 fn split_stream(
     data: &[u8],
-    dst: &mut Vec<MiniVec<u8>>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
+    bit_set: &NullBuffer,
+    dst: &mut StringBuilder,
+) -> Result<ArrayRef, Box<dyn Error + Send + Sync>> {
     let len = data.len();
     let mut i = 0;
 
-    while i < len {
+    for is_null in bit_set.iter() {
+        if is_null {
+            dst.append_null();
+            continue;
+        }
         let str_len = decode_be_u64(&data[i..i + 8]);
         i += 8;
         let str_len: usize = str_len.try_into()?;
-        dst.push(MiniVec::from(&data[i..i + str_len]));
+        dst.append_value(&data[i..i + str_len]);
         i += str_len;
     }
+
+    // while i < len {
+    //     let str_len = decode_be_u64(&data[i..i + 8]);
+    //     i += 8;
+    //     let str_len: usize = str_len.try_into()?;
+    //     // dst.push(MiniVec::from(&data[i..i + str_len]));
+    //     i += str_len;
+    // }
     Ok(())
 }
 
 pub fn str_zstd_decode(
     src: &[u8],
-    dst: &mut Vec<MiniVec<u8>>,
-) -> Result<(), Box<dyn Error + Send + Sync>> {
-    if src.is_empty() {
-        return Ok(());
-    }
-
+    bit_set: &NullBuffer,
+) -> Result<ArrayRef, Box<dyn Error + Send + Sync>> {
+    // if src.is_empty() {
+    //     return Ok(Arc::new(StringArray::));
+    // }
+    let mut builder = StringBuilder::with_capacity(128);
     let src = &src[1..];
     let mut data = vec![];
 

@@ -1,5 +1,7 @@
 use std::error::Error;
 
+use arrow::buffer::NullBuffer;
+use utils::bitset::BitSet;
 // note: encode/decode adapted from influxdb_iox
 // https://github.com/influxdata/influxdb_iox/tree/main/influxdb_tsm/src/encoders
 
@@ -13,12 +15,12 @@ pub fn u64_zigzag_simple8b_encode(
     dst: &mut Vec<u8>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let signed = u64_to_i64_vector(src);
-    super::integer::i64_zigzag_simple8b_encode(&signed, dst)
+    super::integer::i64_zigzag_simple8b_encode(signed, dst)
 }
 
 pub fn u64_pco_encode(src: &[u64], dst: &mut Vec<u8>) -> Result<(), Box<dyn Error + Send + Sync>> {
     let signed = u64_to_i64_vector(src);
-    super::integer::i64_pco_encode(&signed, dst)
+    super::integer::i64_pco_encode(signed, dst)
 }
 
 pub fn u64_without_compress_encode(
@@ -26,62 +28,71 @@ pub fn u64_without_compress_encode(
     dst: &mut Vec<u8>,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let signed = u64_to_i64_vector(src);
-    super::integer::i64_without_compress_encode(&signed, dst)
+    super::integer::i64_without_compress_encode(signed, dst)
 }
 
 /// Decodes a slice of bytes into a destination vector of unsigned integers.
 pub fn u64_zigzag_simple8b_decode(
     src: &[u8],
     dst: &mut Vec<u64>,
+    bit_set: &NullBuffer,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() {
         return Ok(());
     }
-    let mut signed_results = vec![];
-    super::integer::i64_zigzag_simple8b_decode(src, &mut signed_results)?;
-    dst.reserve_exact(signed_results.len() - dst.capacity());
-    for s in signed_results {
-        dst.push(s as u64);
-    }
+    let mut signed_results = Vec::with_capacity(dst.capacity());
+    super::integer::i64_zigzag_simple8b_decode(src, &mut signed_results, bit_set)?;
+    let mut signed_results = *i64_to_u64_vector(&signed_results);
+    std::mem::swap(&mut signed_results, dst);
     Ok(())
 }
 
-pub fn u64_pco_decode(src: &[u8], dst: &mut Vec<u64>) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub fn u64_pco_decode(
+    src: &[u8],
+    dst: &mut Vec<u64>,
+    bit_set: &NullBuffer,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() {
         return Ok(());
     }
-    let mut signed_results = vec![];
-    super::integer::i64_pco_decode(src, &mut signed_results)?;
-    dst.reserve_exact(signed_results.len() - dst.capacity());
-    for s in signed_results {
-        dst.push(s as u64);
-    }
+    let mut signed_results = Vec::with_capacity(dst.capacity());
+    super::integer::i64_pco_decode(src, &mut signed_results, bit_set)?;
+    let mut signed_results = *i64_to_u64_vector(&signed_results);
+    std::mem::swap(&mut signed_results, dst);
     Ok(())
 }
 
 pub fn u64_without_compress_decode(
     src: &[u8],
     dst: &mut Vec<u64>,
+    bit_set: &NullBuffer,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() {
         return Ok(());
     }
-    let mut signed_results = vec![];
-    super::integer::i64_without_compress_decode(src, &mut signed_results)?;
-    dst.reserve_exact(signed_results.len() - dst.capacity());
-    for s in signed_results {
-        dst.push(s as u64);
-    }
+    let mut signed_results = Vec::with_capacity(dst.capacity());
+    super::integer::i64_without_compress_decode(src, &mut signed_results, bit_set)?;
+    // dst.reserve_exact(signed_results.len() - dst.capacity());
+    let mut signed_results = *i64_to_u64_vector(&signed_results);
+    std::mem::swap(&mut signed_results, dst);
     Ok(())
 }
 
-// Converts a slice of `u64` values to a `Vec<i64>`.
-// TODO(edd): this is expensive as it copies. There are cheap
-// but unsafe alternatives to look into such as std::mem::transmute
-fn u64_to_i64_vector(src: &[u64]) -> Vec<i64> {
-    src.iter().map(|&x| x as i64).collect()
+fn convert_slice<T, U>(src: &[T]) -> &[U] {
+    let len = src.len();
+    unsafe {
+        let ptr = src.as_ptr() as *const U;
+        std::slice::from_raw_parts(ptr, len)
+    }
 }
 
+fn u64_to_i64_vector(src: &[u64]) -> &[i64] {
+    convert_slice::<u64, i64>(src)
+}
+
+fn i64_to_u64_vector(src: &[i64]) -> &[u64] {
+    convert_slice::<i64, u64>(src)
+}
 #[cfg(test)]
 #[allow(clippy::unreadable_literal)]
 mod tests {

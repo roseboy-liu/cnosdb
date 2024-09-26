@@ -1,6 +1,8 @@
 use std::error::Error;
 
+use arrow::buffer::NullBuffer;
 use integer_encoding::*;
+use utils::bitset::NullBitset;
 
 use super::simple8b;
 use crate::tsm::codec::timestamp::{
@@ -145,46 +147,62 @@ fn encode_rle(v: u64, delta: u64, count: u64, dst: &mut Vec<u8>) {
 pub fn i64_zigzag_simple8b_decode(
     src: &[u8],
     dst: &mut Vec<i64>,
+    bit_set: &NullBuffer,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() {
         return Ok(());
     }
     let src = &src[1..];
     let encoding = &src[0] >> 4;
+    if dst.capacity() < bit_set.len() {
+        dst.reserve_exact(bit_set.len() - dst.capacity());
+    }
     match encoding {
         encoding if encoding == DeltaEncoding::Uncompressed as u8 => {
-            decode_uncompressed(&src[1..], dst) // first byte not used
+            decode_uncompressed(&src[1..], dst, bit_set) // first byte not used
         }
-        encoding if encoding == DeltaEncoding::Rle as u8 => decode_rle(&src[1..], dst),
-        encoding if encoding == DeltaEncoding::Simple8b as u8 => decode_simple8b(&src[1..], dst),
+        encoding if encoding == DeltaEncoding::Rle as u8 => decode_rle(&src[1..], dst, bit_set),
+        encoding if encoding == DeltaEncoding::Simple8b as u8 => {
+            decode_simple8b(&src[1..], dst, bit_set)
+        }
         _ => Err(From::from("invalid block encoding")),
     }
 }
 
-fn decode_uncompressed(src: &[u8], dst: &mut Vec<i64>) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn decode_uncompressed(
+    src: &[u8],
+    dst: &mut Vec<i64>,
+    bit_set: &NullBuffer,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.is_empty() || src.len() & 0x7 != 0 {
         return Err(From::from("invalid uncompressed block length"));
     }
 
-    let count = src.len() / 8;
-    if dst.capacity() < count {
-        dst.reserve_exact(count - dst.capacity());
-    }
     let mut i = 0;
     let mut prev: i64 = 0;
     let mut buf: [u8; 8] = [0; 8];
-    while i < src.len() {
-        buf.copy_from_slice(&src[i..i + 8]);
-        prev = prev.wrapping_add(zig_zag_decode(u64::from_be_bytes(buf)));
-        dst.push(prev); // N.B - signed integer...
-        i += 8;
+    for is_null in bit_set.iter() {
+        if is_null {
+            dst.push(0);
+            continue;
+        }
+        if i < src.len() {
+            buf.copy_from_slice(&src[i..i + 8]);
+            prev = prev.wrapping_add(zig_zag_decode(u64::from_be_bytes(buf)));
+            dst.push(prev); // N.B - signed integer...
+            i += 8;
+        }
     }
     Ok(())
 }
 
 // decode_rle decodes an RLE encoded slice containing only unsigned into the
 // destination vector.
-fn decode_rle(src: &[u8], dst: &mut Vec<i64>) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn decode_rle(
+    src: &[u8],
+    dst: &mut Vec<i64>,
+    bit_set: &NullBuffer,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.len() < 8 {
         return Err(From::from("not enough data to decode using RLE"));
     }
@@ -196,27 +214,36 @@ fn decode_rle(src: &[u8], dst: &mut Vec<i64>) -> Result<(), Box<dyn Error + Send
 
     let (count, _n) = usize::decode_var(&src[i..]).ok_or("unable to decode count")?;
 
-    if dst.capacity() < count {
-        dst.reserve_exact(count - dst.capacity());
-    }
-
-    // TODO(edd): this should be possible to do in-place without copy.
     let mut a: [u8; 8] = [0; 8];
     a.copy_from_slice(&src[0..8]);
     let mut first = zig_zag_decode(u64::from_be_bytes(a));
     let delta_z = zig_zag_decode(delta);
-
-    // first values stored raw
-    dst.push(first);
-
-    for _ in 0..count {
-        first = first.wrapping_add(delta_z);
-        dst.push(first);
+    let mut is_first = true;
+    for is_null in bit_set.iter() {
+        if is_null {
+            dst.push(0);
+            continue;
+        }
+        if is_first {
+            // first values stored raw
+            dst.push(first);
+            is_first = false;
+            continue;
+        }
+        if i < count {
+            first = first.wrapping_add(delta_z);
+            dst.push(first);
+            i = i + 1;
+        }
     }
     Ok(())
 }
 
-fn decode_simple8b(src: &[u8], dst: &mut Vec<i64>) -> Result<(), Box<dyn Error + Send + Sync>> {
+fn decode_simple8b(
+    src: &[u8],
+    dst: &mut Vec<i64>,
+    bit_set: &NullBuffer,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     if src.len() < 8 {
         return Err(From::from("not enough data to decode packed integer."));
     }
@@ -225,14 +252,26 @@ fn decode_simple8b(src: &[u8], dst: &mut Vec<i64>) -> Result<(), Box<dyn Error +
     let mut res = vec![];
     let mut buf: [u8; 8] = [0; 8];
     buf.copy_from_slice(&src[0..8]);
-    dst.push(zig_zag_decode(u64::from_be_bytes(buf)));
-
-    simple8b::decode(&src[8..], &mut res);
-    // TODO(edd): fix this. It's copying, which is slowwwwwwwww.
-    let mut next = dst[0];
-    for v in &res {
-        next += zig_zag_decode(*v);
-        dst.push(next);
+    let mut first_val = true;
+    let mut next = 0;
+    let mut iter = res.iter();
+    for is_null in bit_set.iter() {
+        if is_null {
+            dst.push(0);
+            continue;
+        }
+        if first_val {
+            next = zig_zag_decode(u64::from_be_bytes(buf));
+            dst.push(next);
+            simple8b::decode(&src[8..], &mut res);
+            first_val = false;
+            iter = res.iter();
+            continue;
+        }
+        if let Some(v) = iter.next() {
+            next += zig_zag_decode(*v);
+            dst.push(next);
+        }
     }
     Ok(())
 }
@@ -240,12 +279,17 @@ fn decode_simple8b(src: &[u8], dst: &mut Vec<i64>) -> Result<(), Box<dyn Error +
 pub fn i64_without_compress_decode(
     src: &[u8],
     dst: &mut Vec<i64>,
+    bit_set: &NullBuffer,
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
-    ts_without_compress_decode(src, dst)
+    ts_without_compress_decode(src, dst, bit_set)
 }
 
-pub fn i64_pco_decode(src: &[u8], dst: &mut Vec<i64>) -> Result<(), Box<dyn Error + Send + Sync>> {
-    ts_pco_decode(src, dst)
+pub fn i64_pco_decode(
+    src: &[u8],
+    dst: &mut Vec<i64>,
+    bit_set: &NullBuffer,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    ts_pco_decode(src, dst, bit_set)
 }
 
 #[cfg(test)]

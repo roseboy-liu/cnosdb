@@ -1,5 +1,7 @@
 use std::sync::Arc;
-
+use datafusion::arrow::array::{ArrayData, ArrayRef, BooleanArray, PrimitiveArray, StringBuilder};
+use datafusion::arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, NullBuffer};
+use datafusion::arrow::datatypes::{DataType, Float64Type, Int64Type, TimeUnit, TimestampMicrosecondType, TimestampMillisecondType, TimestampNanosecondType, TimestampSecondType, UInt64Type};
 use arrow::array::ArrayData;
 use arrow::buffer::{BooleanBuffer, Buffer, MutableBuffer, NullBuffer};
 use arrow_array::builder::StringBuilder;
@@ -93,7 +95,7 @@ impl MutableColumn {
     pub fn data_buf_to_column(
         data_buffer: &[u8],
         meta: &PageMeta,
-        bitset: &NullBitset,
+        null_buffer: &NullBuffer,
     ) -> TskvResult<MutableColumn> {
         let col_type = meta.column.column_type.to_physical_type();
         let mut col = MutableColumn::empty_with_cap(meta.column.clone(), meta.num_values as usize)?;
@@ -103,90 +105,90 @@ impl MutableColumn {
                 let ts_codec = get_i64_codec(encoding);
                 let mut target = Vec::new();
                 ts_codec
-                    .decode(data_buffer, &mut target)
+                    .decode(data_buffer, &mut target, null_buffer)
                     .context(DecodeSnafu)?;
 
-                let mut target = target.into_iter();
-                for i in 0..bitset.len() {
-                    if bitset.get(i) {
-                        col.push(Some(FieldVal::Integer(target.next().context(
-                            TsmPageSnafu {
-                                reason: "data buffer not enough".to_string(),
-                            },
-                        )?)))?;
-                    } else {
-                        col.push(None)?;
-                    }
-                }
+                // let mut target = target.into_iter();
+                // for i in 0..null_buffer.len() {
+                //     if null_buffer.get(i) {
+                //         col.push(Some(FieldVal::Integer(target.next().context(
+                //             TsmPageSnafu {
+                //                 reason: "data buffer not enough".to_string(),
+                //             },
+                //         )?)))?;
+                //     } else {
+                //         col.push(None)?;
+                //     }
+                // }
             }
             PhysicalCType::Field(PhysicalDType::Float) => {
                 let encoding = get_encoding(data_buffer);
                 let ts_codec = get_f64_codec(encoding);
                 let mut target = Vec::new();
                 ts_codec
-                    .decode(data_buffer, &mut target)
+                    .decode(data_buffer, &mut target, null_buffer)
                     .context(DecodeSnafu)?;
 
-                let mut target = target.into_iter();
-                for i in 0..bitset.len() {
-                    if bitset.get(i) {
-                        col.push(Some(FieldVal::Float(target.next().context(
-                            TsmPageSnafu {
-                                reason: "data buffer not enough".to_string(),
-                            },
-                        )?)))?;
-                    } else {
-                        col.push(None)?;
-                    }
-                }
+                // let mut target = target.into_iter();
+                // for i in 0..bitset.len() {
+                //     if bitset.get(i) {
+                //         col.push(Some(FieldVal::Float(target.next().context(
+                //             TsmPageSnafu {
+                //                 reason: "data buffer not enough".to_string(),
+                //             },
+                //         )?)))?;
+                //     } else {
+                //         col.push(None)?;
+                //     }
+                // }
             }
             PhysicalCType::Field(PhysicalDType::Unsigned) => {
                 let encoding = get_encoding(data_buffer);
                 let ts_codec = get_u64_codec(encoding);
                 let mut target = Vec::new();
                 ts_codec
-                    .decode(data_buffer, &mut target)
+                    .decode(data_buffer, &mut target, null_buffer)
                     .context(DecodeSnafu)?;
-                let mut target = target.into_iter();
-                for i in 0..bitset.len() {
-                    if bitset.get(i) {
-                        col.push(Some(FieldVal::Unsigned(target.next().context(
-                            TsmPageSnafu {
-                                reason: "data buffer not enough".to_string(),
-                            },
-                        )?)))?;
-                    } else {
-                        col.push(None)?;
-                    }
-                }
+                // let mut target = target.into_iter();
+                // for i in 0..bitset.len() {
+                //     if bitset.get(i) {
+                //         col.push(Some(FieldVal::Unsigned(target.next().context(
+                //             TsmPageSnafu {
+                //                 reason: "data buffer not enough".to_string(),
+                //             },
+                //         )?)))?;
+                //     } else {
+                //         col.push(None)?;
+                //     }
+                // }
             }
             PhysicalCType::Field(PhysicalDType::Boolean) => {
                 let encoding = get_encoding(data_buffer);
                 let ts_codec = get_bool_codec(encoding);
                 let mut target = Vec::new();
                 ts_codec
-                    .decode(data_buffer, &mut target)
+                    .decode(data_buffer, &mut target, null_buffer)
                     .context(DecodeSnafu)?;
 
-                let mut target = target.into_iter();
-                for i in 0..bitset.len() {
-                    if bitset.get(i) {
-                        col.push(Some(FieldVal::Boolean(target.next().context(
-                            TsmPageSnafu {
-                                reason: "data buffer not enough".to_string(),
-                            },
-                        )?)))?;
-                    } else {
-                        col.push(None)?;
-                    }
-                }
+                // let mut target = target.into_iter();
+                // for i in 0..bitset.len() {
+                //     if bitset.get(i) {
+                //         col.push(Some(FieldVal::Boolean(target.next().context(
+                //             TsmPageSnafu {
+                //                 reason: "data buffer not enough".to_string(),
+                //             },
+                //         )?)))?;
+                //     } else {
+                //         col.push(None)?;
+                //     }
+                // }
             }
             PhysicalCType::Field(PhysicalDType::String) | PhysicalCType::Tag => {
                 let encoding = get_encoding(data_buffer);
                 let ts_codec = get_str_codec(encoding);
                 let mut target = Vec::new();
                 ts_codec
-                    .decode(data_buffer, &mut target)
+                    .decode(data_buffer, &mut target, null_buffer)
                     .context(DecodeSnafu)?;
 
                 let mut target = target.into_iter();
@@ -221,6 +223,11 @@ impl MutableColumn {
         };
         let null_buffer = Buffer::from_vec(null_bitset.null_bitset_slice());
         let null_mutable_buffer = NullBuffer::new(BooleanBuffer::new(null_buffer, 0, num_values));
+        for (val, idx) in null_mutable_buffer.iter().zip(0..num_values) {
+            if val {
+                println!("null at {}", idx);
+            }
+        }
 
         let array: ArrayRef = match self.column_data.primary_data {
             PrimaryColumnData::F64(value, _, _) => {
