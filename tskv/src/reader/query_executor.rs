@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
-use meta::model::MetaRef;
 use models::arrow::stream::{BoxStream, ParallelMergeStream};
 use models::meta_data::VnodeInfo;
 use tokio::runtime::Runtime;
@@ -16,22 +15,15 @@ use crate::EngineRef;
 
 pub struct QueryExecutor {
     option: QueryOption,
-    _meta: MetaRef,
     runtime: Arc<Runtime>,
     kv_inst: EngineRef,
 }
 
 impl QueryExecutor {
-    pub fn new(
-        option: QueryOption,
-        runtime: Arc<Runtime>,
-        meta: MetaRef,
-        kv_inst: EngineRef,
-    ) -> Self {
+    pub fn new(option: QueryOption, runtime: Arc<Runtime>, kv_inst: EngineRef) -> Self {
         Self {
             option,
             runtime,
-            _meta: meta,
             kv_inst,
         }
     }

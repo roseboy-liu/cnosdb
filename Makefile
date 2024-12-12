@@ -14,7 +14,7 @@ clippy_check:
 	BUILD_PROTOS=1 cargo clippy --workspace  --all-targets --features coordinator_e2e_test --features meta_e2e_test -- -D warnings
 
 clippy:
-	BUILD_PROTOS=1 cargo clippy --workspace  --all-targets --features coordinator_e2e_test --features meta_e2e_test --fix --allow-staged
+	BUILD_PROTOS=1 cargo clippy --workspace  --all-targets --features coordinator_e2e_test --features meta_e2e_test --fix --allow-staged --allow-dirty
 
 build:
 	cargo build --workspace --bins

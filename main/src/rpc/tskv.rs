@@ -43,11 +43,25 @@ impl TskvServiceImpl {
     fn internal_status(&self, msg: String) -> tonic::Status {
         tonic::Status::new(tonic::Code::Internal, msg)
     }
-
     async fn warp_admin_request(
         &self,
-        tenant: &str,
-        command: &admin_command::Command,
+        runtime: Arc<Runtime>,
+        tenant: String,
+        command: admin_command::Command,
+    ) -> CoordinatorResult<Vec<u8>> {
+        let (send, mut recv) = mpsc::channel(1);
+        let own = self.clone();
+        runtime.spawn(async move {
+            let result = own.admin_request_inner(tenant, command).await;
+            let _ = send.send(result).await;
+        });
+        recv.recv().await.unwrap()
+    }
+
+    async fn admin_request_inner(
+        &self,
+        tenant: String,
+        command: admin_command::Command,
     ) -> CoordinatorResult<Vec<u8>> {
         match command {
             admin_command::Command::CompactVnode(req) => {
@@ -61,7 +75,7 @@ impl TskvServiceImpl {
             admin_command::Command::OpenRaftNode(req) => {
                 self.coord
                     .raft_manager()
-                    .exec_open_raft_node(tenant, &req.db_name, req.vnode_id, req.replica_id)
+                    .exec_open_raft_node(&tenant, &req.db_name, req.vnode_id, req.replica_id)
                     .await?;
                 Ok(vec![])
             }
@@ -69,7 +83,7 @@ impl TskvServiceImpl {
             admin_command::Command::DropRaftNode(req) => {
                 self.coord
                     .raft_manager()
-                    .exec_drop_raft_node(tenant, &req.db_name, req.vnode_id, req.replica_id)
+                    .exec_drop_raft_node(&tenant, &req.db_name, req.vnode_id, req.replica_id)
                     .await?;
                 Ok(vec![])
             }
@@ -88,7 +102,7 @@ impl TskvServiceImpl {
                 self.coord
                     .raft_manager()
                     .add_follower_to_group(
-                        tenant,
+                        &tenant,
                         &command.db_name,
                         command.follower_nid,
                         command.replica_id,
@@ -101,7 +115,7 @@ impl TskvServiceImpl {
                 self.coord
                     .raft_manager()
                     .remove_node_from_group(
-                        tenant,
+                        &tenant,
                         &command.db_name,
                         command.vnode_id,
                         command.replica_id,
@@ -113,7 +127,7 @@ impl TskvServiceImpl {
             admin_command::Command::DestoryRaftGroup(command) => {
                 self.coord
                     .raft_manager()
-                    .destory_replica_group(tenant, &command.db_name, command.replica_id)
+                    .destory_replica_group(&tenant, &command.db_name, command.replica_id)
                     .await?;
                 Ok(vec![])
             }
@@ -121,7 +135,7 @@ impl TskvServiceImpl {
                 self.coord
                     .raft_manager()
                     .promote_follower_to_leader(
-                        tenant,
+                        &tenant,
                         &command.db_name,
                         command.new_leader_id,
                         command.replica_id,
@@ -132,14 +146,14 @@ impl TskvServiceImpl {
             admin_command::Command::LearnerToFollower(command) => {
                 self.coord
                     .raft_manager()
-                    .learner_to_follower(tenant, &command.db_name, command.replica_id)
+                    .learner_to_follower(&tenant, &command.db_name, command.replica_id)
                     .await?;
                 Ok(vec![])
             }
             admin_command::Command::BuildRaftGroup(command) => {
                 let replica = coordinator::get_replica_by_meta(
                     self.coord.meta_manager(),
-                    tenant,
+                    &tenant,
                     &command.db_name,
                     command.replica_id,
                 )
@@ -147,7 +161,7 @@ impl TskvServiceImpl {
 
                 self.coord
                     .raft_manager()
-                    .build_replica_group(tenant, &command.db_name, &replica)
+                    .build_replica_group(&tenant, &command.db_name, &replica)
                     .await?;
                 Ok(vec![])
             }
@@ -177,7 +191,7 @@ impl TskvServiceImpl {
             vnodes.push(VnodeInfo::new(*id, node_id))
         }
 
-        let executor = QueryExecutor::new(option, self.runtime.clone(), meta, self.kv_inst.clone());
+        let executor = QueryExecutor::new(option, self.runtime.clone(), self.kv_inst.clone());
         executor.local_node_executor(vnodes, span_ctx)
     }
 
@@ -205,7 +219,7 @@ impl TskvServiceImpl {
             .map(|id| VnodeInfo::new(*id, node_id))
             .collect::<Vec<_>>();
 
-        let executor = QueryExecutor::new(option, run_time, meta, kv_inst);
+        let executor = QueryExecutor::new(option, run_time, kv_inst);
         executor.local_node_tag_scan(vnodes, span_ctx)
     }
 }
@@ -273,7 +287,9 @@ impl TskvService for TskvServiceImpl {
         let inner = request.into_inner();
         if let Some(command) = inner.command {
             info!("Exec admin request: {:?}", command);
-            let result = self.warp_admin_request(&inner.tenant, &command).await;
+            let result = self
+                .warp_admin_request(self.runtime.clone(), inner.tenant, command)
+                .await;
             Ok(encode_grpc_response(result))
         } else {
             Ok(encode_grpc_response(Err(CommonSnafu {
@@ -294,7 +310,7 @@ impl TskvService for TskvServiceImpl {
         info!("request download file name: {:?}", filename);
 
         let (send, recv) = mpsc::channel(1024);
-        tokio::spawn(async move {
+        self.runtime.spawn(async move {
             if let Ok(mut file) = tokio::fs::File::open(filename).await {
                 let mut buffer = vec![0; 8 * 1024];
                 while let Ok(len) = file.read(&mut buffer).await {
